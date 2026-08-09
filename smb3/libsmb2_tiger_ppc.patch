@@ -1,0 +1,48 @@
+diff --git a/configure.ac b/configure.ac
+index da733cf..fb7c0b0 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -157,6 +157,9 @@ AC_CHECK_HEADERS([errno.h])
+ dnl  Check for sys/errno.h
+ AC_CHECK_HEADERS([sys/errno.h])
+ 
++dnl  Check for CommonCrypto (not present on older Apple SDKs, e.g. Tiger/PPC)
++AC_CHECK_HEADERS([CommonCrypto/CommonCrypto.h])
++
+ dnl  Check if sockaddr data struct includes a "sa_len"
+ AC_CHECK_MEMBER([struct sockaddr.sa_len], [
+     AC_DEFINE([HAVE_SOCKADDR_LEN], [1], [Whether sockaddr struct has sa_len])
+diff --git a/lib/aes.c b/lib/aes.c
+index 672e8d1..2b4b78c 100644
+--- a/lib/aes.c
++++ b/lib/aes.c
+@@ -18,14 +18,14 @@
+ 
+ #include "aes.h"
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && defined(HAVE_COMMONCRYPTO_COMMONCRYPTO_H)
+ #include "aes_apple.h"
+ #else
+ #include "aes_reference.h"
+ #endif
+ 
+ void AES128_ECB_encrypt(uint8_t* input, const uint8_t* key, uint8_t *output) {
+-#ifdef __APPLE__
++#if defined(__APPLE__) && defined(HAVE_COMMONCRYPTO_COMMONCRYPTO_H)
+ AES128_ECB_encrypt_apple(input, key, output);
+ #else
+ AES128_ECB_encrypt_reference(input, key, output);
+diff --git a/lib/aes_apple.c b/lib/aes_apple.c
+index 1f672dd..22e0e03 100644
+--- a/lib/aes_apple.c
++++ b/lib/aes_apple.c
+@@ -20,7 +20,7 @@
+ 
+ #include "aes_apple.h"
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) && defined(HAVE_COMMONCRYPTO_COMMONCRYPTO_H)
+ 
+ #include <CommonCrypto/CommonCrypto.h>
+ 
