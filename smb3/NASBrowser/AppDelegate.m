@@ -1,4 +1,5 @@
 #import "AppDelegate.h"
+#import "WebDAVServer.h"
 #include <fcntl.h>
 
 /* 古いgcc(4.0系)はObjective-Cの @"..." 日本語リテラルを正しく解釈しないことがあるため、
@@ -37,6 +38,8 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
 {
     entries = [[NSMutableArray alloc] init];
     currentPath = [@"" retain];
+    smb2Lock = [[NSLock alloc] init];
+    mounted = NO;
 
     /* --- 最低限のメニューバー(Quitだけ) --- */
     NSMenu *menubar = [[NSMenu alloc] init];
@@ -87,7 +90,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [content addSubview:connectButton];
     [connectButton release];
 
-    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 60, 570, 18)];
+    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 60, 430, 18)];
     [pathLabel setEditable:NO];
     [pathLabel setBezeled:NO];
     [pathLabel setDrawsBackground:NO];
@@ -96,7 +99,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [content addSubview:pathLabel];
     [pathLabel release];
 
-    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(580, h - 62, 50, 22)];
+    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(450, h - 62, 50, 22)];
     [upButton setTitle:UTF8("上へ")];
     [upButton setBezelStyle:NSRoundedBezelStyle];
     [upButton setTarget:self];
@@ -104,6 +107,15 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [upButton setAutoresizingMask:(NSViewMinXMargin | NSViewMinYMargin)];
     [content addSubview:upButton];
     [upButton release];
+
+    mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(510, h - 62, 120, 22)];
+    [mountButton setTitle:UTF8("Finderに接続")];
+    [mountButton setBezelStyle:NSRoundedBezelStyle];
+    [mountButton setTarget:self];
+    [mountButton setAction:@selector(mountAction:)];
+    [mountButton setAutoresizingMask:(NSViewMinXMargin | NSViewMinYMargin)];
+    [content addSubview:mountButton];
+    [mountButton release];
 
     scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 30, w - 20, h - 100)];
     [scrollView setHasVerticalScroller:YES];
@@ -160,6 +172,11 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
 
 - (void)applicationWillTerminate:(NSNotification *)note
 {
+    if (webdavServer != nil) {
+        [webdavServer stop];
+        [webdavServer release];
+        webdavServer = nil;
+    }
     if (smb2 != NULL) {
         smb2_disconnect_share(smb2);
         smb2_destroy_context(smb2);
@@ -189,11 +206,13 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     NSString *urlString = [args objectForKey:@"url"];
     NSString *password = [args objectForKey:@"password"];
 
+    [smb2Lock lock];
     if (smb2 != NULL) {
         smb2_disconnect_share(smb2);
         smb2_destroy_context(smb2);
         smb2 = NULL;
     }
+    [smb2Lock unlock];
 
     struct smb2_context *ctx = smb2_init_context();
     if (ctx == NULL) {
@@ -236,7 +255,9 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
 
     smb2_destroy_url(url);
 
+    [smb2Lock lock];
     smb2 = ctx;
+    [smb2Lock unlock];
     [currentShare release];
     currentShare = [share retain];
 
@@ -264,9 +285,12 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
 - (void)listDirectory:(NSString *)path
 {
     NSMutableArray *result = [NSMutableArray array];
+
+    [smb2Lock lock];
     struct smb2dir *dir = smb2_opendir(smb2, [path UTF8String]);
     if (dir == NULL) {
         NSString *err = [NSString stringWithFormat:UTF8("一覧取得失敗: %s"), smb2_get_error(smb2)];
+        [smb2Lock unlock];
         [self performSelectorOnMainThread:@selector(listFailed:) withObject:err waitUntilDone:NO];
         return;
     }
@@ -286,6 +310,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
         [result addObject:e];
     }
     smb2_closedir(smb2, dir);
+    [smb2Lock unlock];
 
     [currentPath release];
     currentPath = [path retain];
@@ -441,8 +466,10 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
 /* Finderからのドロップ完了コールバック中(メインスレッド)で同期的に実行する */
 - (BOOL)downloadRemotePath:(NSString *)remotePath toLocalPath:(NSString *)localPath
 {
+    [smb2Lock lock];
     struct smb2fh *fh = smb2_open(smb2, [remotePath UTF8String], O_RDONLY);
     if (fh == NULL) {
+        [smb2Lock unlock];
         return NO;
     }
 
@@ -453,6 +480,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
         [data appendBytes:buf length:n];
     }
     smb2_close(smb2, fh);
+    [smb2Lock unlock];
 
     if (n < 0) {
         return NO;
@@ -555,8 +583,10 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
         return NO;
     }
 
+    [smb2Lock lock];
     struct smb2fh *fh = smb2_open(smb2, [remotePath UTF8String], O_WRONLY | O_CREAT | O_TRUNC);
     if (fh == NULL) {
+        [smb2Lock unlock];
         return NO;
     }
 
@@ -575,6 +605,202 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
         offset += (unsigned long long)n;
     }
     smb2_close(smb2, fh);
+    [smb2Lock unlock];
+    return ok;
+}
+
+/* ============ WebDAVServerから使うアクセサ ============ */
+
+- (struct smb2_context *)smb2Context
+{
+    return smb2;
+}
+
+- (NSLock *)smb2Lock
+{
+    return smb2Lock;
+}
+
+- (NSString *)currentShareName
+{
+    return currentShare;
+}
+
+- (BOOL)isConnected
+{
+    return smb2 != NULL;
+}
+
+/* ============ Finderへのマウント(第2段) ============ */
+
+- (void)mountAction:(id)sender
+{
+    if (mounted) {
+        [self unmountAction:sender];
+        return;
+    }
+    if (![self isConnected]) {
+        [statusLabel setStringValue:UTF8("先に接続してください")];
+        return;
+    }
+    [mountButton setEnabled:NO];
+    [statusLabel setStringValue:UTF8("Finderに接続中...")];
+    [NSThread detachNewThreadSelector:@selector(doMount) toTarget:self withObject:nil];
+}
+
+- (void)doMount
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+    webdavServer = [[WebDAVServer alloc] initWithAppDelegate:self];
+    int p = 8090;
+    BOOL started = NO;
+    int attempt;
+    for (attempt = 0; attempt < 10; attempt++) {
+        if ([webdavServer startOnPort:p]) {
+            started = YES;
+            break;
+        }
+        p++;
+    }
+
+    if (!started) {
+        [webdavServer release];
+        webdavServer = nil;
+        [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
+                                withObject:UTF8("WebDAVサーバーの起動に失敗しました")
+                             waitUntilDone:NO];
+        [pool release];
+        return;
+    }
+
+    NSString *mountName = ([currentShare length] > 0) ? currentShare : @"NAS";
+    NSString *mountPoint = [NSString stringWithFormat:@"/Volumes/%@", mountName];
+    [[NSFileManager defaultManager] createDirectoryAtPath:mountPoint attributes:nil];
+
+    NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d/", [webdavServer port]];
+
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/sbin/mount_webdav"];
+    [task setArguments:[NSArray arrayWithObjects:urlString, mountPoint, nil]];
+    [task setStandardOutput:[NSPipe pipe]];
+    NSPipe *errPipe = [NSPipe pipe];
+    [task setStandardError:errPipe];
+
+    NSString *resultMessage = nil;
+    BOOL success = NO;
+    @try {
+        [task launch];
+        [task waitUntilExit];
+        success = ([task terminationStatus] == 0);
+    }
+    @catch (NSException *ex) {
+        resultMessage = [NSString stringWithFormat:UTF8("マウント失敗: %@"), [ex reason]];
+        success = NO;
+    }
+
+    if (success) {
+        mountPointPath = [mountPoint retain];
+        mounted = YES;
+        resultMessage = [NSString stringWithFormat:UTF8("%@ にマウントしました"), mountPoint];
+    } else if (resultMessage == nil) {
+        NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
+        NSString *errStr = [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease];
+        resultMessage = [NSString stringWithFormat:UTF8("マウント失敗: %@"), (errStr ? errStr : @"")];
+    }
+    [task release];
+
+    if (!success) {
+        [webdavServer stop];
+        [webdavServer release];
+        webdavServer = nil;
+    }
+
+    [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
+                            withObject:resultMessage
+                         waitUntilDone:NO];
+    [pool release];
+}
+
+- (void)mountFinishedWithMessage:(NSString *)message
+{
+    [statusLabel setStringValue:message];
+    [mountButton setEnabled:YES];
+    [mountButton setTitle:(mounted ? UTF8("取り外す") : UTF8("Finderに接続"))];
+}
+
+- (void)unmountAction:(id)sender
+{
+    [mountButton setEnabled:NO];
+    [statusLabel setStringValue:UTF8("取り外し中...")];
+    [NSThread detachNewThreadSelector:@selector(doUnmount) toTarget:self withObject:nil];
+}
+
+- (void)doUnmount
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+    BOOL unmountOK = NO;
+
+    if (mountPointPath != nil) {
+        /* まず通常のumountを試し、失敗したら-fで強制する。
+           OSレベルの取り外しが本当に成功したかどうかをterminationStatusで確認してから
+           WebDAVサーバーを止める。ここを確認せずにサーバーだけ止めると、OS側は
+           マウントされたままなのに応答するサーバーが無い「壊れたマウント」になり、
+           以後 /Volumes へのアクセス全体がハングする(実際に発生した不具合)。 */
+        unmountOK = [self runUnmountCommand:mountPointPath force:NO];
+        if (!unmountOK) {
+            unmountOK = [self runUnmountCommand:mountPointPath force:YES];
+        }
+    } else {
+        unmountOK = YES;
+    }
+
+    NSString *resultMessage;
+    if (unmountOK) {
+        if (webdavServer != nil) {
+            [webdavServer stop];
+            [webdavServer release];
+            webdavServer = nil;
+        }
+        [mountPointPath release];
+        mountPointPath = nil;
+        mounted = NO;
+        resultMessage = UTF8("取り外しました");
+    } else {
+        /* 取り外しに失敗した場合はサーバーを止めない(壊れたマウントを作らないため) */
+        resultMessage = UTF8("取り外しに失敗しました。Finderから取り出すか、再度お試しください");
+    }
+
+    [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
+                            withObject:resultMessage
+                         waitUntilDone:NO];
+    [pool release];
+}
+
+/* バックグラウンドスレッドから呼ばれる。umount(必要なら-f付き)を実行し、成功したかを返す */
+- (BOOL)runUnmountCommand:(NSString *)mountPoint force:(BOOL)force
+{
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/sbin/umount"];
+    if (force) {
+        [task setArguments:[NSArray arrayWithObjects:@"-f", mountPoint, nil]];
+    } else {
+        [task setArguments:[NSArray arrayWithObjects:mountPoint, nil]];
+    }
+    [task setStandardOutput:[NSPipe pipe]];
+    [task setStandardError:[NSPipe pipe]];
+
+    BOOL ok = NO;
+    @try {
+        [task launch];
+        [task waitUntilExit];
+        ok = ([task terminationStatus] == 0);
+    }
+    @catch (NSException *ex) {
+        ok = NO;
+    }
+    [task release];
     return ok;
 }
 
@@ -584,6 +810,9 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [currentServer release];
     [currentShare release];
     [currentPath release];
+    [smb2Lock release];
+    [webdavServer release];
+    [mountPointPath release];
     [super dealloc];
 }
 

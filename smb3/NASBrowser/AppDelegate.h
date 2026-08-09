@@ -2,6 +2,8 @@
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
 
+@class WebDAVServer;
+
 @interface AppDelegate : NSObject
 {
     NSWindow *window;
@@ -10,21 +12,28 @@
     NSSecureTextField *passwordField;
     NSButton *connectButton;
     NSButton *upButton;
+    NSButton *mountButton;
     NSTextField *pathLabel;
     NSTextField *statusLabel;
     NSScrollView *scrollView;
     NSTableView *tableView;
 
     struct smb2_context *smb2;
+    NSLock *smb2Lock;         /* smb2への全アクセスはこのロックを取ってから行う */
     NSString *currentServer;
     NSString *currentShare;
-    NSString *currentPath;   /* "" がルート。区切りは "/" */
+    NSString *currentPath;    /* "" がルート。区切りは "/" */
 
-    NSMutableArray *entries; /* 各要素は NSDictionary { name, isDir, size } */
+    NSMutableArray *entries;  /* 各要素は NSDictionary { name, isDir, size } */
+
+    WebDAVServer *webdavServer;
+    BOOL mounted;
+    NSString *mountPointPath;
 }
 
 - (void)connectAction:(id)sender;
 - (void)upAction:(id)sender;
+- (void)mountAction:(id)sender;
 
 - (void)doConnect:(NSDictionary *)args;
 - (void)connectSucceeded;
@@ -38,5 +47,17 @@
 - (BOOL)uploadLocalPath:(NSString *)localPath toRemotePath:(NSString *)remotePath;
 - (void)uploadFiles:(NSArray *)localPaths;
 - (void)uploadFinished:(NSDictionary *)result;
+
+/* WebDAVServerから使うアクセサ */
+- (struct smb2_context *)smb2Context;
+- (NSLock *)smb2Lock;
+- (NSString *)currentShareName;
+- (BOOL)isConnected;
+
+- (void)doMount;
+- (void)mountFinishedWithMessage:(NSString *)message;
+- (void)unmountAction:(id)sender;
+- (void)doUnmount;
+- (BOOL)runUnmountCommand:(NSString *)mountPoint force:(BOOL)force;
 
 @end
