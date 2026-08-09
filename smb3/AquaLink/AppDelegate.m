@@ -1058,17 +1058,19 @@ static NSString *LoadKeychainPassword(void)
         [content addSubview:tableScroll];
         [tableScroll release];
 
-        addFolderButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 190, 30, 24)];
+        addFolderButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 190, 24, 24)];
         [addFolderButton setTitle:@"+"];
-        [addFolderButton setBezelStyle:NSRoundedBezelStyle];
+        [addFolderButton setFont:[NSFont boldSystemFontOfSize:14]];
+        [addFolderButton setBezelStyle:NSSmallSquareBezelStyle];
         [addFolderButton setTarget:self];
         [addFolderButton setAction:@selector(addFolderAction:)];
         [content addSubview:addFolderButton];
         [addFolderButton release];
 
-        removeFolderButton = [[NSButton alloc] initWithFrame:NSMakeRect(45, h - 190, 30, 24)];
+        removeFolderButton = [[NSButton alloc] initWithFrame:NSMakeRect(38, h - 190, 24, 24)];
         [removeFolderButton setTitle:@"-"];
-        [removeFolderButton setBezelStyle:NSRoundedBezelStyle];
+        [removeFolderButton setFont:[NSFont boldSystemFontOfSize:14]];
+        [removeFolderButton setBezelStyle:NSSmallSquareBezelStyle];
         [removeFolderButton setTarget:self];
         [removeFolderButton setAction:@selector(removeFolderAction:)];
         [content addSubview:removeFolderButton];
