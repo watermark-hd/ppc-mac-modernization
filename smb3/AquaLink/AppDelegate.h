@@ -33,9 +33,12 @@
 
     NSMutableArray *bookmarks; /* 接続に成功したsmb://URLの履歴。新しい順、最大10件 */
 
-    /* --- iBookをNAS化する(共有)機能 --- */
+    /* --- このMacを共有する(NAS化)機能 --- */
     NSWindow *shareWindow;
-    NSTextField *shareFolderField;
+    NSTableView *shareFolderTable;
+    NSMutableArray *shareFolders;  /* 各要素は NSMutableDictionary { name, path } */
+    NSButton *addFolderButton;
+    NSButton *removeFolderButton;
     NSTextField *shareUserField;
     NSSecureTextField *sharePasswordField;
     NSTextField *sharePortField;
@@ -43,6 +46,11 @@
     NSTextField *shareStatusLabel;
     LocalWebDAVServer *localWebDAVServer;
     BOOL sharing;
+
+    /* ウィンドウが無くても(起動時の自動再開などで)使える設定保持用 */
+    NSString *shareUser;
+    NSString *sharePassword;
+    int sharePortValue;
 }
 
 - (void)connectAction:(id)sender;
@@ -55,14 +63,18 @@
 - (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox;
 - (id)comboBox:(NSComboBox *)aComboBox objectValueForItemAtIndex:(int)index;
 
-/* --- iBookをNAS化する(共有)機能 --- */
+/* --- このMacを共有する(NAS化)機能 --- */
 - (void)showShareWindow:(id)sender;
-- (void)chooseFolderAction:(id)sender;
+- (void)addFolderAction:(id)sender;
+- (void)removeFolderAction:(id)sender;
 - (void)toggleSharingAction:(id)sender;
 - (void)doStartSharing:(NSDictionary *)args;
 - (void)sharingStartedWithMessage:(NSString *)message;
 - (void)doStopSharing;
 - (void)sharingStoppedWithMessage:(NSString *)message;
+- (void)loadShareSettings;
+- (void)saveShareSettings;
+- (void)autoStartSharingIfConfigured;
 
 - (void)doConnect:(NSDictionary *)args;
 - (void)connectSucceeded;

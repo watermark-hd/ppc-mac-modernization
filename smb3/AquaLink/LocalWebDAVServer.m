@@ -89,11 +89,11 @@ static NSData *Base64Decode(NSString *input)
 
 @implementation LocalWebDAVServer
 
-- (id)initWithRootPath:(NSString *)path user:(NSString *)user password:(NSString *)password
+- (id)initWithShares:(NSDictionary *)sharesDict user:(NSString *)user password:(NSString *)password
 {
     self = [super init];
     if (self) {
-        rootPath = [path retain];
+        shares = [sharesDict retain];
         authUser = [user retain];
         authPassword = [password retain];
         listenFd = -1;
@@ -361,7 +361,9 @@ static NSData *Base64Decode(NSString *input)
     [self sendBytes:[head dataUsingEncoding:NSUTF8StringEncoding] toSocket:fd];
 }
 
-/* WebDAVパスをローカルの絶対パスに変換する。パストラバーサル(..)は拒否してnilを返す */
+/* WebDAVパスをローカルの絶対パスに変換する。
+   先頭の1階層は共有名(shares辞書のキー)として扱う。
+   ルート("/")自体・共有名が見つからない・パストラバーサル(..)の場合はnilを返す。 */
 - (NSString *)localPathForWebDAVPath:(NSString *)path
 {
     NSString *decoded = [path stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
@@ -375,7 +377,23 @@ static NSData *Base64Decode(NSString *input)
         decoded = [decoded substringToIndex:[decoded length] - 1];
     }
 
-    NSArray *comps = [decoded componentsSeparatedByString:@"/"];
+    if ([decoded length] == 0) {
+        return nil; /* ルート自体は仮想フォルダなのでローカルパスに対応しない */
+    }
+
+    NSRange slash = [decoded rangeOfString:@"/"];
+    NSString *shareName = (slash.location == NSNotFound) ? decoded : [decoded substringToIndex:slash.location];
+    NSString *rest = (slash.location == NSNotFound) ? @"" : [decoded substringFromIndex:slash.location + 1];
+
+    NSString *shareRoot = [shares objectForKey:shareName];
+    if (shareRoot == nil) {
+        return nil;
+    }
+    if ([rest length] == 0) {
+        return shareRoot;
+    }
+
+    NSArray *comps = [rest componentsSeparatedByString:@"/"];
     NSEnumerator *e = [comps objectEnumerator];
     NSString *c;
     while ((c = [e nextObject])) {
@@ -384,10 +402,7 @@ static NSData *Base64Decode(NSString *input)
         }
     }
 
-    if ([decoded length] == 0) {
-        return rootPath;
-    }
-    return [rootPath stringByAppendingPathComponent:decoded];
+    return [shareRoot stringByAppendingPathComponent:rest];
 }
 
 /* ============ OPTIONS ============ */
@@ -428,11 +443,58 @@ static NSData *Base64Decode(NSString *input)
     return entry;
 }
 
+/* ルート("/")向け: 各共有フォルダを仮想サブフォルダとして一覧表示する */
+- (void)handlePROPFINDRoot:(NSString *)path depth:(NSString *)depth toSocket:(int)fd
+{
+    NSMutableString *xml = [NSMutableString string];
+    [xml appendString:@"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"];
+    [xml appendString:@"<D:multistatus xmlns:D=\"DAV:\">\n"];
+    [xml appendString:[self responseEntryForHref:@"/" isDir:YES size:0 mtime:time(NULL)]];
+
+    if (![depth isEqualToString:@"0"]) {
+        NSEnumerator *e = [[shares allKeys] objectEnumerator];
+        NSString *name;
+        while ((name = [e nextObject])) {
+            NSString *localPath = [shares objectForKey:name];
+            time_t mtime = time(NULL);
+            struct stat st;
+            if (stat([localPath UTF8String], &st) == 0) {
+                mtime = st.st_mtime;
+            }
+            NSString *href = [NSString stringWithFormat:@"/%@/", URLEncodePathComponent(name)];
+            [xml appendString:[self responseEntryForHref:href isDir:YES size:0 mtime:mtime]];
+        }
+    }
+    [xml appendString:@"</D:multistatus>\n"];
+
+    NSData *bodyData = [xml dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableString *head = [NSMutableString string];
+    [head appendString:@"HTTP/1.1 207 Multi-Status\r\n"];
+    [head appendString:@"Content-Type: text/xml; charset=\"utf-8\"\r\n"];
+    [head appendFormat:@"Content-Length: %lu\r\n", (unsigned long)[bodyData length]];
+    [head appendString:@"Connection: close\r\n\r\n"];
+
+    [self sendBytes:[head dataUsingEncoding:NSUTF8StringEncoding] toSocket:fd];
+    [self sendBytes:bodyData toSocket:fd];
+}
+
 - (void)handlePROPFIND:(NSString *)path depth:(NSString *)depth toSocket:(int)fd
 {
+    NSString *trimmed = path;
+    if ([trimmed hasPrefix:@"/"]) {
+        trimmed = [trimmed substringFromIndex:1];
+    }
+    if ([trimmed hasSuffix:@"/"]) {
+        trimmed = [trimmed substringToIndex:[trimmed length] - 1];
+    }
+    if ([trimmed length] == 0) {
+        [self handlePROPFINDRoot:path depth:depth toSocket:fd];
+        return;
+    }
+
     NSString *localPath = [self localPathForWebDAVPath:path];
     if (localPath == nil) {
-        [self sendSimpleStatus:@"403 Forbidden" toSocket:fd];
+        [self sendSimpleStatus:@"404 Not Found" toSocket:fd];
         return;
     }
 
@@ -640,7 +702,7 @@ static NSData *Base64Decode(NSString *input)
 - (void)dealloc
 {
     [self stop];
-    [rootPath release];
+    [shares release];
     [authUser release];
     [authPassword release];
     [super dealloc];

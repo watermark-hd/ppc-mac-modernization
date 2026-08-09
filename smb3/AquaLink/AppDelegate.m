@@ -5,6 +5,8 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <string.h>
+#include <Security/Security.h>
 
 /* 古いgcc(4.0系)はObjective-Cの @"..." 日本語リテラルを正しく解釈しないことがあるため、
    C文字列(生バイト列、コンパイラによる再解釈なし)からUTF-8として明示的に組み立てる */
@@ -67,6 +69,49 @@ static NSString *GetLocalIPAddress(void)
     return address ? address : @"(IP不明)";
 }
 
+/* --- キーチェーン: 共有機能のパスワードを平文でNSUserDefaultsに置かないための保存先 --- */
+#define KEYCHAIN_SERVICE "AquaLink-Share"
+#define KEYCHAIN_ACCOUNT "shared-password"
+
+static void SaveKeychainPassword(NSString *password)
+{
+    const char *pass = [password UTF8String];
+    UInt32 passLen = pass ? (UInt32)strlen(pass) : 0;
+
+    SecKeychainItemRef item = NULL;
+    OSStatus status = SecKeychainFindGenericPassword(NULL,
+                                                       (UInt32)strlen(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE,
+                                                       (UInt32)strlen(KEYCHAIN_ACCOUNT), KEYCHAIN_ACCOUNT,
+                                                       NULL, NULL, &item);
+    if (status == noErr && item != NULL) {
+        SecKeychainItemModifyContent(item, NULL, passLen, pass);
+        CFRelease(item);
+    } else {
+        SecKeychainAddGenericPassword(NULL,
+                                       (UInt32)strlen(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE,
+                                       (UInt32)strlen(KEYCHAIN_ACCOUNT), KEYCHAIN_ACCOUNT,
+                                       passLen, pass, NULL);
+    }
+}
+
+static NSString *LoadKeychainPassword(void)
+{
+    UInt32 passLen = 0;
+    void *passData = NULL;
+    OSStatus status = SecKeychainFindGenericPassword(NULL,
+                                                       (UInt32)strlen(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE,
+                                                       (UInt32)strlen(KEYCHAIN_ACCOUNT), KEYCHAIN_ACCOUNT,
+                                                       &passLen, &passData, NULL);
+    if (status != noErr || passData == NULL) {
+        return nil;
+    }
+    NSString *result = [[[NSString alloc] initWithBytes:passData
+                                                   length:passLen
+                                                 encoding:NSUTF8StringEncoding] autorelease];
+    SecKeychainItemFreeContent(NULL, passData);
+    return result;
+}
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note
@@ -76,13 +121,16 @@ static NSString *GetLocalIPAddress(void)
     smb2Lock = [[NSLock alloc] init];
     mounted = NO;
 
+    shareFolders = [[NSMutableArray alloc] init];
+    [self loadShareSettings];
+
     /* --- メニューバー(共有設定・Quit) ---
        [既知の不具合・原因不明] このTiger環境ではプルダウンメニューを開いても
        中身が表示されない/意図しない場所に浮遊表示される問題がある。メニュー構造
        そのものは正しいことをダンプで確認済み(重複なし)。target設定・release
        タイミング・setMainMenu:の順序など複数の仮説を試したが解消しなかったため、
        WindowServer側の描画バグの可能性が高いと判断し、メニュー自体の修正は断念した。
-       実用上は下記のメインウィンドウ内の「iBookを共有(NAS化)...」ボタンから
+       実用上は下記のメインウィンドウ内の「このMacを共有(NAS化)...」ボタンから
        同じ画面を開けるので、共有設定はそちらを使うこと。 */
     NSMenu *menubar = [NSApp mainMenu];
     NSMenuItem *appMenuItem;
@@ -192,7 +240,7 @@ static NSString *GetLocalIPAddress(void)
     [mountButton release];
 
     NSButton *shareSettingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 92, 200, 22)];
-    [shareSettingsButton setTitle:UTF8("iBookを共有(NAS化)...")];
+    [shareSettingsButton setTitle:UTF8("このMacを共有(NAS化)...")];
     [shareSettingsButton setBezelStyle:NSRoundedBezelStyle];
     [shareSettingsButton setTarget:self];
     [shareSettingsButton setAction:@selector(showShareWindow:)];
@@ -246,6 +294,8 @@ static NSString *GetLocalIPAddress(void)
 
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
+
+    [self autoStartSharingIfConfigured];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app
@@ -481,11 +531,28 @@ static NSString *GetLocalIPAddress(void)
 
 - (int)numberOfRowsInTableView:(NSTableView *)aTableView
 {
+    if (aTableView == shareFolderTable) {
+        return (int)[shareFolders count];
+    }
     return (int)[entries count];
 }
 
 - (id)tableView:(NSTableView *)aTableView objectValueForTableColumn:(NSTableColumn *)aTableColumn row:(int)rowIndex
 {
+    if (aTableView == shareFolderTable) {
+        if (rowIndex < 0 || rowIndex >= (int)[shareFolders count]) {
+            return @"";
+        }
+        NSDictionary *f = [shareFolders objectAtIndex:rowIndex];
+        NSString *identifier = [aTableColumn identifier];
+        if ([identifier isEqualToString:@"name"]) {
+            return [f objectForKey:@"name"];
+        } else if ([identifier isEqualToString:@"path"]) {
+            return [f objectForKey:@"path"];
+        }
+        return @"";
+    }
+
     if (rowIndex < 0 || rowIndex >= (int)[entries count]) {
         return @"";
     }
@@ -941,45 +1008,73 @@ static NSString *GetLocalIPAddress(void)
     return [bookmarks objectAtIndex:index];
 }
 
-/* ============ iBookをNAS化する(共有)機能 ============ */
+/* ============ このMacを共有する(NAS化)機能 ============ */
 
 - (void)showShareWindow:(id)sender
 {
     if (shareWindow == nil) {
-        NSRect frame = NSMakeRect(150, 150, 480, 230);
+        NSRect frame = NSMakeRect(150, 120, 520, 420);
         shareWindow = [[NSWindow alloc] initWithContentRect:frame
                                                     styleMask:(NSTitledWindowMask | NSClosableWindowMask)
                                                       backing:NSBackingStoreBuffered
                                                         defer:NO];
-        [shareWindow setTitle:UTF8("iBookを共有(NAS化)")];
+        [shareWindow setTitle:UTF8("このMacを共有(NAS化)")];
         [shareWindow setReleasedWhenClosed:NO];
 
         NSView *content = [shareWindow contentView];
         float h = frame.size.height;
+        float w = frame.size.width;
 
-        NSTextField *folderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 30, 100, 18)];
+        NSTextField *folderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 24, 200, 18)];
         [folderLabel setEditable:NO];
         [folderLabel setBezeled:NO];
         [folderLabel setDrawsBackground:NO];
-        [folderLabel setStringValue:UTF8("共有フォルダ:")];
+        [folderLabel setStringValue:UTF8("共有フォルダ一覧:")];
         [content addSubview:folderLabel];
         [folderLabel release];
 
-        shareFolderField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 32, 260, 22)];
-        [shareFolderField setEditable:NO];
-        [shareFolderField setStringValue:UTF8("(未選択)")];
-        [content addSubview:shareFolderField];
-        [shareFolderField release];
+        NSScrollView *tableScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, h - 160, w - 20, 130)];
+        [tableScroll setHasVerticalScroller:YES];
+        [tableScroll setBorderType:NSBezelBorder];
 
-        NSButton *chooseButton = [[NSButton alloc] initWithFrame:NSMakeRect(380, h - 34, 90, 26)];
-        [chooseButton setTitle:UTF8("選択...")];
-        [chooseButton setBezelStyle:NSRoundedBezelStyle];
-        [chooseButton setTarget:self];
-        [chooseButton setAction:@selector(chooseFolderAction:)];
-        [content addSubview:chooseButton];
-        [chooseButton release];
+        shareFolderTable = [[NSTableView alloc] initWithFrame:[tableScroll bounds]];
+        [shareFolderTable setDataSource:self];
+        [shareFolderTable setDelegate:self];
 
-        NSTextField *userLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 62, 100, 18)];
+        NSTableColumn *nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
+        [[nameCol headerCell] setStringValue:UTF8("共有名")];
+        [nameCol setWidth:140];
+        [shareFolderTable addTableColumn:nameCol];
+        [nameCol release];
+
+        NSTableColumn *pathCol = [[NSTableColumn alloc] initWithIdentifier:@"path"];
+        [[pathCol headerCell] setStringValue:UTF8("フォルダパス")];
+        [pathCol setWidth:320];
+        [shareFolderTable addTableColumn:pathCol];
+        [pathCol release];
+
+        [tableScroll setDocumentView:shareFolderTable];
+        [shareFolderTable release];
+        [content addSubview:tableScroll];
+        [tableScroll release];
+
+        addFolderButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 190, 30, 24)];
+        [addFolderButton setTitle:@"+"];
+        [addFolderButton setBezelStyle:NSRoundedBezelStyle];
+        [addFolderButton setTarget:self];
+        [addFolderButton setAction:@selector(addFolderAction:)];
+        [content addSubview:addFolderButton];
+        [addFolderButton release];
+
+        removeFolderButton = [[NSButton alloc] initWithFrame:NSMakeRect(45, h - 190, 30, 24)];
+        [removeFolderButton setTitle:@"-"];
+        [removeFolderButton setBezelStyle:NSRoundedBezelStyle];
+        [removeFolderButton setTarget:self];
+        [removeFolderButton setAction:@selector(removeFolderAction:)];
+        [content addSubview:removeFolderButton];
+        [removeFolderButton release];
+
+        NSTextField *userLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 222, 100, 18)];
         [userLabel setEditable:NO];
         [userLabel setBezeled:NO];
         [userLabel setDrawsBackground:NO];
@@ -987,12 +1082,12 @@ static NSString *GetLocalIPAddress(void)
         [content addSubview:userLabel];
         [userLabel release];
 
-        shareUserField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 64, 150, 22)];
-        [shareUserField setStringValue:UTF8("watermark")];
+        shareUserField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 224, 200, 22)];
+        [shareUserField setStringValue:(shareUser ? shareUser : UTF8("watermark"))];
         [content addSubview:shareUserField];
         [shareUserField release];
 
-        NSTextField *passLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 94, 100, 18)];
+        NSTextField *passLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 254, 100, 18)];
         [passLabel setEditable:NO];
         [passLabel setBezeled:NO];
         [passLabel setDrawsBackground:NO];
@@ -1000,12 +1095,15 @@ static NSString *GetLocalIPAddress(void)
         [content addSubview:passLabel];
         [passLabel release];
 
-        sharePasswordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(115, h - 96, 150, 22)];
+        sharePasswordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(115, h - 256, 200, 22)];
         [[sharePasswordField cell] setPlaceholderString:UTF8("必須")];
+        if (sharePassword) {
+            [sharePasswordField setStringValue:sharePassword];
+        }
         [content addSubview:sharePasswordField];
         [sharePasswordField release];
 
-        NSTextField *portLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 126, 100, 18)];
+        NSTextField *portLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 286, 100, 18)];
         [portLabel setEditable:NO];
         [portLabel setBezeled:NO];
         [portLabel setDrawsBackground:NO];
@@ -1013,20 +1111,20 @@ static NSString *GetLocalIPAddress(void)
         [content addSubview:portLabel];
         [portLabel release];
 
-        sharePortField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 128, 80, 22)];
-        [sharePortField setStringValue:@"8091"];
+        sharePortField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 288, 80, 22)];
+        [sharePortField setStringValue:(sharePortValue > 0 ? [NSString stringWithFormat:@"%d", sharePortValue] : @"8091")];
         [content addSubview:sharePortField];
         [sharePortField release];
 
-        shareStartButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 168, 120, 26)];
-        [shareStartButton setTitle:UTF8("共有開始")];
+        shareStartButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 328, 140, 26)];
+        [shareStartButton setTitle:(sharing ? UTF8("共有停止") : UTF8("共有開始"))];
         [shareStartButton setBezelStyle:NSRoundedBezelStyle];
         [shareStartButton setTarget:self];
         [shareStartButton setAction:@selector(toggleSharingAction:)];
         [content addSubview:shareStartButton];
         [shareStartButton release];
 
-        shareStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 210, 460, 40)];
+        shareStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, w - 20, 70)];
         [shareStatusLabel setEditable:NO];
         [shareStatusLabel setBezeled:NO];
         [shareStatusLabel setDrawsBackground:NO];
@@ -1036,22 +1134,61 @@ static NSString *GetLocalIPAddress(void)
         [shareStatusLabel release];
     }
 
+    [shareFolderTable reloadData];
     [shareWindow makeKeyAndOrderFront:nil];
 }
 
-- (void)chooseFolderAction:(id)sender
+- (void)addFolderAction:(id)sender
 {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
     [panel setCanChooseDirectories:YES];
     [panel setCanChooseFiles:NO];
-    [panel setAllowsMultipleSelection:NO];
+    [panel setAllowsMultipleSelection:YES];
     int result = [panel runModalForDirectory:NSHomeDirectory() file:nil types:nil];
-    if (result == NSOKButton) {
-        NSArray *filenames = [panel filenames];
-        if ([filenames count] > 0) {
-            [shareFolderField setStringValue:[filenames objectAtIndex:0]];
-        }
+    if (result != NSOKButton) {
+        return;
     }
+    NSArray *filenames = [panel filenames];
+    NSEnumerator *e = [filenames objectEnumerator];
+    NSString *path;
+    while ((path = [e nextObject])) {
+        NSString *baseName = [path lastPathComponent];
+        NSString *name = baseName;
+        int suffix = 2;
+        BOOL collision;
+        do {
+            collision = NO;
+            NSEnumerator *fe = [shareFolders objectEnumerator];
+            NSDictionary *f;
+            while ((f = [fe nextObject])) {
+                if ([[f objectForKey:@"name"] isEqualToString:name]) {
+                    collision = YES;
+                    break;
+                }
+            }
+            if (collision) {
+                name = [NSString stringWithFormat:@"%@%d", baseName, suffix];
+                suffix++;
+            }
+        } while (collision);
+
+        NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                       name, @"name", path, @"path", nil];
+        [shareFolders addObject:entry];
+    }
+    [shareFolderTable reloadData];
+    [self saveShareSettings];
+}
+
+- (void)removeFolderAction:(id)sender
+{
+    int row = [shareFolderTable selectedRow];
+    if (row < 0 || row >= (int)[shareFolders count]) {
+        return;
+    }
+    [shareFolders removeObjectAtIndex:row];
+    [shareFolderTable reloadData];
+    [self saveShareSettings];
 }
 
 - (void)toggleSharingAction:(id)sender
@@ -1063,13 +1200,12 @@ static NSString *GetLocalIPAddress(void)
         return;
     }
 
-    NSString *folder = [shareFolderField stringValue];
     NSString *user = [shareUserField stringValue];
     NSString *pass = [sharePasswordField stringValue];
     NSString *portStr = [sharePortField stringValue];
 
-    if ([folder length] == 0 || [folder isEqualToString:UTF8("(未選択)")]) {
-        [shareStatusLabel setStringValue:UTF8("共有フォルダを選択してください")];
+    if ([shareFolders count] == 0) {
+        [shareStatusLabel setStringValue:UTF8("共有フォルダを1つ以上追加してください")];
         return;
     }
     if ([user length] == 0 || [pass length] == 0) {
@@ -1077,12 +1213,29 @@ static NSString *GetLocalIPAddress(void)
         return;
     }
 
+    [shareUser release];
+    shareUser = [user retain];
+    [sharePassword release];
+    sharePassword = [pass retain];
+    sharePortValue = [portStr intValue];
+    if (sharePortValue <= 0) {
+        sharePortValue = 8091;
+    }
+    [self saveShareSettings];
+
     [shareStartButton setEnabled:NO];
     [shareStatusLabel setStringValue:UTF8("共有を開始しています...")];
 
+    NSMutableDictionary *sharesDict = [NSMutableDictionary dictionary];
+    NSEnumerator *e = [shareFolders objectEnumerator];
+    NSDictionary *f;
+    while ((f = [e nextObject])) {
+        [sharesDict setObject:[f objectForKey:@"path"] forKey:[f objectForKey:@"name"]];
+    }
+
     NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
-                           folder, @"folder", user, @"user", pass, @"pass",
-                           (portStr ? portStr : @"8091"), @"port", nil];
+                           sharesDict, @"shares", user, @"user", pass, @"pass",
+                           [NSNumber numberWithInt:sharePortValue], @"port", nil];
     [NSThread detachNewThreadSelector:@selector(doStartSharing:) toTarget:self withObject:args];
 }
 
@@ -1090,7 +1243,7 @@ static NSString *GetLocalIPAddress(void)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
-    NSString *folder = [args objectForKey:@"folder"];
+    NSDictionary *sharesDict = [args objectForKey:@"shares"];
     NSString *user = [args objectForKey:@"user"];
     NSString *pass = [args objectForKey:@"pass"];
     int port = [[args objectForKey:@"port"] intValue];
@@ -1098,7 +1251,7 @@ static NSString *GetLocalIPAddress(void)
         port = 8091;
     }
 
-    LocalWebDAVServer *server = [[LocalWebDAVServer alloc] initWithRootPath:folder user:user password:pass];
+    LocalWebDAVServer *server = [[LocalWebDAVServer alloc] initWithShares:sharesDict user:user password:pass];
     BOOL started = NO;
     int attempt;
     int p = port;
@@ -1115,8 +1268,8 @@ static NSString *GetLocalIPAddress(void)
         localWebDAVServer = server;
         NSString *ip = GetLocalIPAddress();
         message = [NSString stringWithFormat:
-                   UTF8("共有中です。他の機器から下記へ接続してください:\nhttp://%@:%d/ (ユーザー名/パスワードが必要)"),
-                   ip, p];
+                   UTF8("共有中です(%d フォルダ)。他の機器から下記へ接続してください:\nhttp://%@:%d/ (ユーザー名/パスワードが必要)"),
+                   (int)[sharesDict count], ip, p];
     } else {
         [server release];
         message = UTF8("共有の開始に失敗しました(ポートを確保できません)");
@@ -1159,6 +1312,86 @@ static NSString *GetLocalIPAddress(void)
     [shareStartButton setTitle:UTF8("共有開始")];
 }
 
+/* ============ 共有設定の永続化 ============ */
+
+- (void)saveShareSettings
+{
+    NSMutableArray *plist = [NSMutableArray array];
+    NSEnumerator *e = [shareFolders objectEnumerator];
+    NSDictionary *f;
+    while ((f = [e nextObject])) {
+        [plist addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                           [f objectForKey:@"name"], @"name",
+                           [f objectForKey:@"path"], @"path", nil]];
+    }
+
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:plist forKey:@"AquaLinkShareFolders"];
+    if (shareUser) {
+        [defaults setObject:shareUser forKey:@"AquaLinkShareUser"];
+    }
+    [defaults setInteger:sharePortValue forKey:@"AquaLinkSharePort"];
+    [defaults synchronize];
+
+    if ([sharePassword length] > 0) {
+        SaveKeychainPassword(sharePassword);
+    }
+}
+
+- (void)loadShareSettings
+{
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+
+    NSArray *plist = [defaults arrayForKey:@"AquaLinkShareFolders"];
+    [shareFolders removeAllObjects];
+    if (plist != nil) {
+        NSEnumerator *e = [plist objectEnumerator];
+        NSDictionary *f;
+        while ((f = [e nextObject])) {
+            [shareFolders addObject:[NSMutableDictionary dictionaryWithDictionary:f]];
+        }
+    }
+
+    NSString *savedUser = [defaults stringForKey:@"AquaLinkShareUser"];
+    [shareUser release];
+    shareUser = [(savedUser ? savedUser : UTF8("watermark")) retain];
+
+    int savedPort = [defaults integerForKey:@"AquaLinkSharePort"];
+    sharePortValue = (savedPort > 0) ? savedPort : 8091;
+
+    [sharePassword release];
+    sharePassword = [LoadKeychainPassword() retain];
+}
+
+/* アプリ起動時、前回の共有設定が保存されていれば自動的に共有を再開する */
+- (void)autoStartSharingIfConfigured
+{
+    if ([shareFolders count] == 0 || [sharePassword length] == 0 || [shareUser length] == 0) {
+        return;
+    }
+
+    NSMutableDictionary *sharesDict = [NSMutableDictionary dictionary];
+    NSEnumerator *e = [shareFolders objectEnumerator];
+    NSDictionary *f;
+    BOOL anyValid = NO;
+    while ((f = [e nextObject])) {
+        NSString *path = [f objectForKey:@"path"];
+        BOOL isDir = NO;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path isDirectory:&isDir] && isDir) {
+            [sharesDict setObject:path forKey:[f objectForKey:@"name"]];
+            anyValid = YES;
+        }
+    }
+    if (!anyValid) {
+        return;
+    }
+
+    NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
+                           sharesDict, @"shares", shareUser, @"user", sharePassword, @"pass",
+                           [NSNumber numberWithInt:sharePortValue], @"port", nil];
+    [NSThread detachNewThreadSelector:@selector(doStartSharing:) toTarget:self withObject:args];
+}
+
 - (void)dealloc
 {
     [entries release];
@@ -1170,6 +1403,9 @@ static NSString *GetLocalIPAddress(void)
     [mountPointPath release];
     [bookmarks release];
     [localWebDAVServer release];
+    [shareFolders release];
+    [shareUser release];
+    [sharePassword release];
     [super dealloc];
 }
 

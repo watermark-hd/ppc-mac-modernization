@@ -1,11 +1,12 @@
 #import <Foundation/Foundation.h>
 #include <time.h>
 
-/* iBookのローカルフォルダを、LAN上の他機器(Mac/Windows)にWebDAVで公開する。
-   Basic認証必須。パストラバーサル(../)は拒否する。 */
+/* このMacのローカルフォルダ(複数可)を、LAN上の他機器(Mac/Windows)にWebDAVで公開する。
+   ルート("/")には各共有フォルダが名前付きの仮想サブフォルダとして並ぶ。
+   Basic認証必須(全フォルダ共通の1組)。パストラバーサル(../)は拒否する。 */
 @interface LocalWebDAVServer : NSObject
 {
-    NSString *rootPath;   /* 共有するローカルフォルダの絶対パス */
+    NSDictionary *shares;   /* { 共有名(NSString) : ローカル絶対パス(NSString) } */
     NSString *authUser;
     NSString *authPassword;
     int listenFd;
@@ -13,7 +14,7 @@
     BOOL shouldRun;
 }
 
-- (id)initWithRootPath:(NSString *)path user:(NSString *)user password:(NSString *)password;
+- (id)initWithShares:(NSDictionary *)sharesDict user:(NSString *)user password:(NSString *)password;
 - (BOOL)startOnPort:(int)p;
 - (void)stop;
 - (int)port;
@@ -33,6 +34,7 @@
 - (void)handleOPTIONS:(int)fd;
 - (NSString *)responseEntryForHref:(NSString *)href isDir:(BOOL)isDir
                                size:(unsigned long long)size mtime:(time_t)mtime;
+- (void)handlePROPFINDRoot:(NSString *)path depth:(NSString *)depth toSocket:(int)fd;
 - (void)handlePROPFIND:(NSString *)path depth:(NSString *)depth toSocket:(int)fd;
 - (void)handleGET:(NSString *)path toSocket:(int)fd includeBody:(BOOL)includeBody;
 - (void)handlePUT:(NSString *)path body:(NSData *)body toSocket:(int)fd;

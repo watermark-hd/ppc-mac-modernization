@@ -9,7 +9,7 @@ LIBSMB2_A = $(LIBSMB2_DIR)/lib/.libs/libsmb2.a
 
 CC = gcc
 CFLAGS = -std=gnu99 -Wall -fobjc-exceptions -I$(LIBSMB2_INC)
-LDFLAGS = -framework Cocoa
+LDFLAGS = -framework Cocoa -framework Security
 
 OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o
 

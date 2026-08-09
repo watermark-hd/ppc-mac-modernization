@@ -145,11 +145,28 @@ iBook 実機で確認済み:
 (`open`/`read`/`write`/`opendir`等)に置き換え、`127.0.0.1`限定ではなく`INADDR_ANY`で
 LAN上の他機器からも接続できるようにし、Basic認証とパストラバーサル(`../`)対策を追加した。
 
-AquaLinkのメインウィンドウに「iBookを共有(NAS化)...」ボタンがあり、共有フォルダ・
+AquaLinkのメインウィンドウに「このMacを共有(NAS化)...」ボタンがあり、共有フォルダ・
 ユーザー名・パスワード・ポートを設定して開始する。実機で以下を確認済み:
 
 - `curl` での認証・PROPFIND一覧・GET・PUT・DELETE・パストラバーサル拒否
 - macOS Finder(現代のMacBook Air)からの実際のマウント・ブラウズ・ダウンロード
+
+### 機能追加: 複数フォルダ共有 + 自動再開(依頼者フィードバックにより追加)
+
+- **複数フォルダ共有**: `LocalWebDAVServer` を単一`rootPath`から`shares`辞書
+  ( `{共有名: ローカルパス}` )に変更。ルート(`/`)へのPROPFINDは各共有名を仮想サブフォルダ
+  として一覧表示し(`handlePROPFINDRoot:`)、`/共有名/以下のパス`を実際のローカルパスに
+  解決する(`localPathForWebDAVPath:`が先頭1階層を共有名として扱う)。市販NASの
+  「複数共有フォルダ」に近い挙動になった。
+- **フォルダ一覧UI**: `NSTableView`で共有フォルダ(名前・パス)を一覧表示し、「+」でフォルダ
+  選択(複数選択可、フォルダ名の重複は自動で連番を付けて回避)、「-」で削除。
+- **再起動しても自動的に共有を再開**: フォルダ一覧・ユーザー名・ポートは`NSUserDefaults`に、
+  パスワードは平文で残さないよう**キーチェーン**(`SecKeychainAddGenericPassword`/
+  `SecKeychainFindGenericPassword`/`SecKeychainItemModifyContent`、Tiger時点で既存のAPI)
+  に保存し、`applicationDidFinishLaunching:`の最後で`autoStartSharingIfConfigured`を呼んで
+  自動的に共有を開始する。ウィンドウを開かなくても機能するよう、UIフィールドとは別に
+  `shareUser`/`sharePassword`/`sharePortValue`のivarを設定の実体として持たせ、ウィンドウは
+  それらを表示するだけの薄いビューにした。
 
 ### ハマった点
 
