@@ -58,7 +58,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [menubar release];
 
     /* --- ウィンドウ --- */
-    NSRect frame = NSMakeRect(100, 100, 640, 420);
+    NSRect frame = NSMakeRect(100, 100, 700, 420);
     window = [[NSWindow alloc] initWithContentRect:frame
                                           styleMask:(NSTitledWindowMask | NSClosableWindowMask |
                                                       NSMiniaturizableWindowMask | NSResizableWindowMask)
@@ -70,18 +70,24 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     float h = frame.size.height;
     float w = frame.size.width;
 
-    urlField = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 32, 330, 22)];
+    [self loadBookmarks];
+
+    urlField = [[NSComboBox alloc] initWithFrame:NSMakeRect(10, h - 32, 380, 22)];
     [urlField setStringValue:@"smb://user@server/share"];
+    [urlField setUsesDataSource:YES];
+    [urlField setDataSource:self];
+    [urlField setCompletes:NO];
     [urlField setAutoresizingMask:(NSViewWidthSizable | NSViewMinYMargin)];
     [content addSubview:urlField];
     [urlField release];
 
-    passwordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(350, h - 32, 150, 22)];
+    passwordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(400, h - 32, 150, 22)];
+    [[passwordField cell] setPlaceholderString:UTF8("パスワード")];
     [passwordField setAutoresizingMask:(NSViewMinXMargin | NSViewMinYMargin)];
     [content addSubview:passwordField];
     [passwordField release];
 
-    connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(510, h - 34, 120, 26)];
+    connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, h - 34, 130, 26)];
     [connectButton setTitle:UTF8("接続")];
     [connectButton setBezelStyle:NSRoundedBezelStyle];
     [connectButton setTarget:self];
@@ -90,7 +96,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [content addSubview:connectButton];
     [connectButton release];
 
-    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 60, 430, 18)];
+    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 60, 480, 18)];
     [pathLabel setEditable:NO];
     [pathLabel setBezeled:NO];
     [pathLabel setDrawsBackground:NO];
@@ -99,7 +105,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [content addSubview:pathLabel];
     [pathLabel release];
 
-    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(450, h - 62, 50, 22)];
+    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, h - 62, 50, 22)];
     [upButton setTitle:UTF8("上へ")];
     [upButton setBezelStyle:NSRoundedBezelStyle];
     [upButton setTarget:self];
@@ -108,7 +114,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [content addSubview:upButton];
     [upButton release];
 
-    mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(510, h - 62, 120, 22)];
+    mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, h - 62, 130, 22)];
     [mountButton setTitle:UTF8("Finderに接続")];
     [mountButton setBezelStyle:NSRoundedBezelStyle];
     [mountButton setTarget:self];
@@ -172,6 +178,15 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
 
 - (void)applicationWillTerminate:(NSNotification *)note
 {
+    /* マウント中に何も考えずWebDAVサーバーを止めると、OS側はマウントされたままだと
+       思い込んだ「壊れたマウント」が残ってしまう(実際に発生した不具合)。
+       終了処理でも必ず先にOSレベルの取り外しを試みてからサーバーを止める。 */
+    if (mounted && mountPointPath != nil) {
+        BOOL ok = [self runUnmountCommand:mountPointPath force:NO];
+        if (!ok) {
+            [self runUnmountCommand:mountPointPath force:YES];
+        }
+    }
     if (webdavServer != nil) {
         [webdavServer stop];
         [webdavServer release];
@@ -271,6 +286,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
 {
     [statusLabel setStringValue:UTF8("接続しました")];
     [connectButton setEnabled:YES];
+    [self addBookmark:[urlField stringValue]];
 }
 
 - (void)connectFailed:(NSString *)message
@@ -804,6 +820,45 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     return ok;
 }
 
+/* ============ ブックマーク(接続履歴) ============ */
+
+- (void)loadBookmarks
+{
+    NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:@"NASBrowserBookmarks"];
+    [bookmarks release];
+    bookmarks = saved ? [saved mutableCopy] : [[NSMutableArray alloc] init];
+}
+
+- (void)addBookmark:(NSString *)urlString
+{
+    if ([urlString length] == 0) {
+        return;
+    }
+    [bookmarks removeObject:urlString];
+    [bookmarks insertObject:urlString atIndex:0];
+    while ([bookmarks count] > 10) {
+        [bookmarks removeLastObject];
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:bookmarks forKey:@"NASBrowserBookmarks"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [urlField reloadData];
+}
+
+/* ============ NSComboBox データソース ============ */
+
+- (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox
+{
+    return (int)[bookmarks count];
+}
+
+- (id)comboBox:(NSComboBox *)aComboBox objectValueForItemAtIndex:(int)index
+{
+    if (index < 0 || index >= (int)[bookmarks count]) {
+        return @"";
+    }
+    return [bookmarks objectAtIndex:index];
+}
+
 - (void)dealloc
 {
     [entries release];
@@ -813,6 +868,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [smb2Lock release];
     [webdavServer release];
     [mountPointPath release];
+    [bookmarks release];
     [super dealloc];
 }
 

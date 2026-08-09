@@ -8,7 +8,7 @@
 {
     NSWindow *window;
 
-    NSTextField *urlField;
+    NSComboBox *urlField;
     NSSecureTextField *passwordField;
     NSButton *connectButton;
     NSButton *upButton;
@@ -29,11 +29,19 @@
     WebDAVServer *webdavServer;
     BOOL mounted;
     NSString *mountPointPath;
+
+    NSMutableArray *bookmarks; /* 接続に成功したsmb://URLの履歴。新しい順、最大10件 */
 }
 
 - (void)connectAction:(id)sender;
 - (void)upAction:(id)sender;
 - (void)mountAction:(id)sender;
+- (void)loadBookmarks;
+- (void)addBookmark:(NSString *)urlString;
+
+/* NSComboBox データソース(履歴の一覧表示に使用) */
+- (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox;
+- (id)comboBox:(NSComboBox *)aComboBox objectValueForItemAtIndex:(int)index;
 
 - (void)doConnect:(NSDictionary *)args;
 - (void)connectSucceeded;

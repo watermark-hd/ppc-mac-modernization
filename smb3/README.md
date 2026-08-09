@@ -89,6 +89,18 @@ open ~/NASBrowser/NASBrowser.app   # または実機でダブルクリック
 - **`errno:9`ソケットエラー**: パスワード未入力(空パスワード=ゲスト接続扱い)で発生。
   macOSのファイル共有はデフォルトでゲスト接続を許可しないため、正しいパスワードが必須。
 
+### 使い勝手の改善(依頼者フィードバックにより追加)
+
+- **接続履歴**: `NSComboBox` にURL欄を変更。入力もでき、ドロップダウンから過去の接続先
+  (最大10件、`NSUserDefaults` に保存。パスワードは保存しない)も選べる。
+  当初 `NSPopUpButton`(プルダウンメニュー)で実装したが、小さいボタン幅のせいか
+  項目の文字が読み取れない不具合が発生したため、Safariのアドレスバーに近い
+  `NSComboBox` に置き換えて解決。データソースAPIは `numberOfItemsInComboBox:` /
+  `comboBox:objectValueForItemAtIndex:`(いずれも `int` 版。Tigerは`NSInteger`以前)。
+- **パスワード欄のプレースホルダー**: 何を入力する欄か分かりにくいとの指摘を受け、
+  `[[passwordField cell] setPlaceholderString:...]` で薄く「パスワード」と表示するようにした。
+  `NSTextFieldCell` の `setPlaceholderString:` は Tiger の時点で既に存在する。
+
 ## C案 第2段: WebDAVループバックでFinderマウント ✅ 完了
 
 `WebDAVServer.h/.m` に実装。NASBrowser 内蔵の極小 HTTP/WebDAV サーバー(生の BSD ソケット、
