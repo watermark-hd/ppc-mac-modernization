@@ -54,10 +54,42 @@ export NTLM_USER_FILE=~/.smb2_ntlm
 
 パスワードファイルはテスト後に必ず削除すること。
 
-## 次のステップ(未着手)
+## C案 第1段: NASBrowser.app ✅ 完了
 
-CLAUDE.md の C案(マウントアプリ)へ進む場合の想定:
+`NASBrowser/` にソース一式。libsmb2 を静的リンクした自己完結の Cocoa アプリ(nib不要、
+プログラムでUI構築)。iBook 実機で以下すべて動作確認済み:
 
-1. `make install` して `/usr/local/lib` にライブラリを配置(現状は `DYLD_LIBRARY_PATH` 指定でのみ動作)
-2. 第1段: ファイルブラウザ型 Cocoa アプリ(libsmb2を組み込み、NSPasteboardのファイルプロミスでFinderとドラッグ&ドロップ)
-3. 第2段: アプリ内蔵の極小WebDAVサーバー + `mount_webdav` でFinderにアイコンを出す
+- smb3:// URL + パスワードでの接続(NTLMSSP認証)
+- ディレクトリ一覧表示(日本語ファイル名を含め文字化けなし)
+- ダブルクリックでの移動、「上へ」での親ディレクトリ移動
+- **ドラッグ&ドロップでのダウンロード**(NASBrowser → Finder。ファイルプロミス方式)
+- **ドラッグ&ドロップでのアップロード**(Finder → NASBrowser)
+
+### ビルド方法
+
+```bash
+rsync -a NASBrowser/ ibook:~/NASBrowser/
+ssh ibook 'cd ~/NASBrowser && make'
+open ~/NASBrowser/NASBrowser.app   # または実機でダブルクリック
+```
+
+`libsmb2.a`(静的ライブラリ)を直接リンクしているため、`make install` は不要。
+`$HOME/libsmb2` にビルド済みの libsmb2 ソースツリーがある前提。
+
+### ハマった点
+
+- **日本語文字化け**: 古い gcc(4.0.0)の Objective-C コンパイラが `@"日本語"` 形式の
+  文字列リテラルを正しく解釈しないことがある。`[NSString stringWithUTF8String:"日本語"]`
+  （Cの生バイト列からUTF-8として明示デコード）に置き換えて解決。`AppDelegate.m` 冒頭の
+  `UTF8(cstr)` マクロ参照。
+- **ドラッグ&ドロップのダウンロードが無反応**: `NSPasteboard` 汎用の
+  `-namesOfPromisedFilesDroppedAtDestination:` ではなく、`NSTableView` 専用の
+  `-tableView:namesOfPromisedFilesDroppedAtDestination:forDraggedRowsWithIndexes:`
+  を実装する必要があった(`NSTableView.h` に明記されている、Tiger時代からのAPI)。
+- **`errno:9`ソケットエラー**: パスワード未入力(空パスワード=ゲスト接続扱い)で発生。
+  macOSのファイル共有はデフォルトでゲスト接続を許可しないため、正しいパスワードが必須。
+
+## 次のステップ(未着手): 第2段
+
+アプリ内蔵の極小 WebDAV サーバー + `mount_webdav` で Finder にアイコンを出す構想。
+第1段が動いたことで libsmb2 の read/write は実証済みなので、あとは WebDAV サーバー実装が中心。
