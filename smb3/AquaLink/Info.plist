@@ -3,19 +3,21 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>NASBrowser</string>
+	<string>AquaLink</string>
 	<key>CFBundleIdentifier</key>
-	<string>local.ibookproject.nasbrowser</string>
+	<string>local.ibookproject.aqualink</string>
 	<key>CFBundleName</key>
-	<string>NASBrowser</string>
+	<string>AquaLink</string>
+	<key>CFBundleIconFile</key>
+	<string>AquaLink.icns</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleVersion</key>
-	<string>0.1</string>
+	<string>0.2</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1</string>
+	<string>0.2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>10.4</string>
 	<key>NSPrincipalClass</key>

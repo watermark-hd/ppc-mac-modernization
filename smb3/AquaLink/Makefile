@@ -1,4 +1,4 @@
-APPNAME = NASBrowser
+APPNAME = AquaLink
 APPBUNDLE = $(APPNAME).app
 CONTENTS = $(APPBUNDLE)/Contents
 MACOS = $(CONTENTS)/MacOS
@@ -15,9 +15,13 @@ OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o
 
 all: $(APPBUNDLE)
 
-$(APPBUNDLE): $(MACOS)/$(APPNAME) Info.plist
+RESOURCES = $(CONTENTS)/Resources
+
+$(APPBUNDLE): $(MACOS)/$(APPNAME) Info.plist $(APPNAME).icns
 	mkdir -p $(CONTENTS)
+	mkdir -p $(RESOURCES)
 	cp Info.plist $(CONTENTS)/Info.plist
+	cp $(APPNAME).icns $(RESOURCES)/$(APPNAME).icns
 	printf 'APPL????' > $(CONTENTS)/PkgInfo
 
 $(MACOS)/$(APPNAME): $(OBJS) $(LIBSMB2_A)

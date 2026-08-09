@@ -196,7 +196,7 @@ static NSData *Base64Decode(NSString *input)
 - (void)sendUnauthorized:(int)fd
 {
     NSString *head = @"HTTP/1.1 401 Unauthorized\r\n"
-                      "WWW-Authenticate: Basic realm=\"NASBrowser\"\r\n"
+                      "WWW-Authenticate: Basic realm=\"AquaLink\"\r\n"
                       "Content-Length: 0\r\nConnection: close\r\n\r\n";
     [self sendBytes:[head dataUsingEncoding:NSUTF8StringEncoding] toSocket:fd];
 }

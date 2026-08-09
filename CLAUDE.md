@@ -225,7 +225,7 @@ CLI で接続できただけでも実証として意味があり、報告する�
 
 libsmb2 を組み込んだ Cocoa アプリ。2段構え。
 
-**第1段: ファイルブラウザ型** ✅ 完了（`smb3/NASBrowser/`、実機で動作確認済み）
+**第1段: ファイルブラウザ型** ✅ 完了（`smb3/AquaLink/`、実機で動作確認済み。旧称NASBrowser）
 - 自前ウィンドウにファイル一覧（Cyberduck / Transmit 形式）
 - `NSPasteboard` のファイルプロミスで Finder と双方向ドラッグ&ドロップ
 - kext 不要

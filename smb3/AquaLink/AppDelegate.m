@@ -77,32 +77,53 @@ static NSString *GetLocalIPAddress(void)
     mounted = NO;
 
     /* --- メニューバー(共有設定・Quit) ---
-       サブメニューを含め完全に組み立ててから setMainMenu: すること。
-       また、この時代の NSApplication は mainMenu をretainしない可能性があるため、
-       自前で強参照を持ち続ける(=releaseしない。アプリ生存期間中ずっと必要なので意図的)。
-       先にreleaseしてしまうと、メニュータイトルだけ表示されて中身(サブメニュー)が
-       壊れる、という不具合が実際に発生した。 */
-    NSMenu *appMenu = [[NSMenu alloc] init];
+       [既知の不具合・原因不明] このTiger環境ではプルダウンメニューを開いても
+       中身が表示されない/意図しない場所に浮遊表示される問題がある。メニュー構造
+       そのものは正しいことをダンプで確認済み(重複なし)。target設定・release
+       タイミング・setMainMenu:の順序など複数の仮説を試したが解消しなかったため、
+       WindowServer側の描画バグの可能性が高いと判断し、メニュー自体の修正は断念した。
+       実用上は下記のメインウィンドウ内の「iBookを共有(NAS化)...」ボタンから
+       同じ画面を開けるので、共有設定はそちらを使うこと。 */
+    NSMenu *menubar = [NSApp mainMenu];
+    NSMenuItem *appMenuItem;
+    BOOL needsInstall = NO;
+    if (menubar == nil) {
+        menubar = [[NSMenu alloc] init];
+        appMenuItem = [[NSMenuItem alloc] init];
+        [menubar addItem:appMenuItem];
+        needsInstall = YES;
+    } else if ([menubar numberOfItems] > 0) {
+        appMenuItem = (NSMenuItem *)[menubar itemAtIndex:0];
+    } else {
+        appMenuItem = [[NSMenuItem alloc] init];
+        [menubar addItem:appMenuItem];
+    }
+    [appMenuItem setTitle:@"AquaLink"];
+
+    NSMenu *appMenu = [appMenuItem submenu];
+    if (appMenu == nil) {
+        appMenu = [[NSMenu alloc] init];
+        [appMenuItem setSubmenu:appMenu];
+    }
+
     NSMenuItem *shareMenuItem = [[NSMenuItem alloc] initWithTitle:UTF8("共有設定...")
                                                              action:@selector(showShareWindow:)
                                                       keyEquivalent:@""];
     [shareMenuItem setTarget:self];
     [appMenu addItem:shareMenuItem];
     [shareMenuItem release];
-    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit NASBrowser"
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit AquaLink"
                                                         action:@selector(terminate:)
                                                  keyEquivalent:@"q"];
+    [quitItem setTarget:NSApp];
     [appMenu addItem:quitItem];
     [quitItem release];
-
-    NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
-    [appMenuItem setTitle:@"NASBrowser"];
-    [appMenuItem setSubmenu:appMenu];
-
-    NSMenu *menubar = [[NSMenu alloc] init];
-    [menubar addItem:appMenuItem];
-    [NSApp setMainMenu:menubar];
     /* menubar / appMenuItem / appMenu はここでreleaseしない(意図的) */
+
+    /* タイトル・中身が全て確定してから最後にインストールする */
+    if (needsInstall) {
+        [NSApp setMainMenu:menubar];
+    }
 
     /* --- ウィンドウ --- */
     NSRect frame = NSMakeRect(100, 100, 700, 450);
@@ -111,7 +132,7 @@ static NSString *GetLocalIPAddress(void)
                                                       NSMiniaturizableWindowMask | NSResizableWindowMask)
                                             backing:NSBackingStoreBuffered
                                               defer:NO];
-    [window setTitle:@"NASBrowser"];
+    [window setTitle:@"AquaLink"];
 
     NSView *content = [window contentView];
     float h = frame.size.height;
@@ -885,7 +906,7 @@ static NSString *GetLocalIPAddress(void)
 
 - (void)loadBookmarks
 {
-    NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:@"NASBrowserBookmarks"];
+    NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:@"AquaLinkBookmarks"];
     [bookmarks release];
     bookmarks = saved ? [saved mutableCopy] : [[NSMutableArray alloc] init];
 }
@@ -900,7 +921,7 @@ static NSString *GetLocalIPAddress(void)
     while ([bookmarks count] > 10) {
         [bookmarks removeLastObject];
     }
-    [[NSUserDefaults standardUserDefaults] setObject:bookmarks forKey:@"NASBrowserBookmarks"];
+    [[NSUserDefaults standardUserDefaults] setObject:bookmarks forKey:@"AquaLinkBookmarks"];
     [[NSUserDefaults standardUserDefaults] synchronize];
     [urlField reloadData];
 }
