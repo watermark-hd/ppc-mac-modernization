@@ -11,7 +11,7 @@ CC = gcc
 CFLAGS = -std=gnu99 -Wall -fobjc-exceptions -I$(LIBSMB2_INC)
 LDFLAGS = -framework Cocoa
 
-OBJS = main.o AppDelegate.o WebDAVServer.o
+OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o
 
 all: $(APPBUNDLE)
 

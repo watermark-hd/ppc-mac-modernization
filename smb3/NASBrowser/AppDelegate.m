@@ -1,6 +1,10 @@
 #import "AppDelegate.h"
 #import "WebDAVServer.h"
+#import "LocalWebDAVServer.h"
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 /* 古いgcc(4.0系)はObjective-Cの @"..." 日本語リテラルを正しく解釈しないことがあるため、
    C文字列(生バイト列、コンパイラによる再解釈なし)からUTF-8として明示的に組み立てる */
@@ -32,6 +36,37 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     return [NSString stringWithFormat:@"%.1f GB", size / (1024.0 * 1024.0 * 1024.0)];
 }
 
+/* ループバック以外の最初のIPv4アドレスを返す(LAN上の他機器に案内するURL用) */
+static NSString *GetLocalIPAddress(void)
+{
+    struct ifaddrs *interfaces = NULL;
+    struct ifaddrs *temp;
+    NSString *address = nil;
+
+    if (getifaddrs(&interfaces) == 0) {
+        temp = interfaces;
+        while (temp != NULL) {
+            if (temp->ifa_addr != NULL && temp->ifa_addr->sa_family == AF_INET) {
+                NSString *name = [NSString stringWithUTF8String:temp->ifa_name];
+                if (![name isEqualToString:@"lo0"]) {
+                    char buf[INET_ADDRSTRLEN];
+                    struct sockaddr_in *addrIn = (struct sockaddr_in *)temp->ifa_addr;
+                    if (inet_ntop(AF_INET, &(addrIn->sin_addr), buf, sizeof(buf)) != NULL) {
+                        NSString *ip = [NSString stringWithUTF8String:buf];
+                        if (![ip hasPrefix:@"169.254"]) {
+                            address = ip;
+                            break;
+                        }
+                    }
+                }
+            }
+            temp = temp->ifa_next;
+        }
+        freeifaddrs(interfaces);
+    }
+    return address ? address : @"(IP不明)";
+}
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note
@@ -41,24 +76,36 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     smb2Lock = [[NSLock alloc] init];
     mounted = NO;
 
-    /* --- 最低限のメニューバー(Quitだけ) --- */
-    NSMenu *menubar = [[NSMenu alloc] init];
-    NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
-    [menubar addItem:appMenuItem];
-    [NSApp setMainMenu:menubar];
+    /* --- メニューバー(共有設定・Quit) ---
+       サブメニューを含め完全に組み立ててから setMainMenu: すること。
+       また、この時代の NSApplication は mainMenu をretainしない可能性があるため、
+       自前で強参照を持ち続ける(=releaseしない。アプリ生存期間中ずっと必要なので意図的)。
+       先にreleaseしてしまうと、メニュータイトルだけ表示されて中身(サブメニュー)が
+       壊れる、という不具合が実際に発生した。 */
     NSMenu *appMenu = [[NSMenu alloc] init];
+    NSMenuItem *shareMenuItem = [[NSMenuItem alloc] initWithTitle:UTF8("共有設定...")
+                                                             action:@selector(showShareWindow:)
+                                                      keyEquivalent:@""];
+    [shareMenuItem setTarget:self];
+    [appMenu addItem:shareMenuItem];
+    [shareMenuItem release];
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit NASBrowser"
                                                         action:@selector(terminate:)
                                                  keyEquivalent:@"q"];
     [appMenu addItem:quitItem];
-    [appMenuItem setSubmenu:appMenu];
     [quitItem release];
-    [appMenu release];
-    [appMenuItem release];
-    [menubar release];
+
+    NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
+    [appMenuItem setTitle:@"NASBrowser"];
+    [appMenuItem setSubmenu:appMenu];
+
+    NSMenu *menubar = [[NSMenu alloc] init];
+    [menubar addItem:appMenuItem];
+    [NSApp setMainMenu:menubar];
+    /* menubar / appMenuItem / appMenu はここでreleaseしない(意図的) */
 
     /* --- ウィンドウ --- */
-    NSRect frame = NSMakeRect(100, 100, 700, 420);
+    NSRect frame = NSMakeRect(100, 100, 700, 450);
     window = [[NSWindow alloc] initWithContentRect:frame
                                           styleMask:(NSTitledWindowMask | NSClosableWindowMask |
                                                       NSMiniaturizableWindowMask | NSResizableWindowMask)
@@ -123,7 +170,16 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [content addSubview:mountButton];
     [mountButton release];
 
-    scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 30, w - 20, h - 100)];
+    NSButton *shareSettingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 92, 200, 22)];
+    [shareSettingsButton setTitle:UTF8("iBookを共有(NAS化)...")];
+    [shareSettingsButton setBezelStyle:NSRoundedBezelStyle];
+    [shareSettingsButton setTarget:self];
+    [shareSettingsButton setAction:@selector(showShareWindow:)];
+    [shareSettingsButton setAutoresizingMask:(NSViewMinYMargin)];
+    [content addSubview:shareSettingsButton];
+    [shareSettingsButton release];
+
+    scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 30, w - 20, h - 130)];
     [scrollView setHasVerticalScroller:YES];
     [scrollView setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 
@@ -191,6 +247,11 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
         [webdavServer stop];
         [webdavServer release];
         webdavServer = nil;
+    }
+    if (localWebDAVServer != nil) {
+        [localWebDAVServer stop];
+        [localWebDAVServer release];
+        localWebDAVServer = nil;
     }
     if (smb2 != NULL) {
         smb2_disconnect_share(smb2);
@@ -859,6 +920,224 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     return [bookmarks objectAtIndex:index];
 }
 
+/* ============ iBookをNAS化する(共有)機能 ============ */
+
+- (void)showShareWindow:(id)sender
+{
+    if (shareWindow == nil) {
+        NSRect frame = NSMakeRect(150, 150, 480, 230);
+        shareWindow = [[NSWindow alloc] initWithContentRect:frame
+                                                    styleMask:(NSTitledWindowMask | NSClosableWindowMask)
+                                                      backing:NSBackingStoreBuffered
+                                                        defer:NO];
+        [shareWindow setTitle:UTF8("iBookを共有(NAS化)")];
+        [shareWindow setReleasedWhenClosed:NO];
+
+        NSView *content = [shareWindow contentView];
+        float h = frame.size.height;
+
+        NSTextField *folderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 30, 100, 18)];
+        [folderLabel setEditable:NO];
+        [folderLabel setBezeled:NO];
+        [folderLabel setDrawsBackground:NO];
+        [folderLabel setStringValue:UTF8("共有フォルダ:")];
+        [content addSubview:folderLabel];
+        [folderLabel release];
+
+        shareFolderField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 32, 260, 22)];
+        [shareFolderField setEditable:NO];
+        [shareFolderField setStringValue:UTF8("(未選択)")];
+        [content addSubview:shareFolderField];
+        [shareFolderField release];
+
+        NSButton *chooseButton = [[NSButton alloc] initWithFrame:NSMakeRect(380, h - 34, 90, 26)];
+        [chooseButton setTitle:UTF8("選択...")];
+        [chooseButton setBezelStyle:NSRoundedBezelStyle];
+        [chooseButton setTarget:self];
+        [chooseButton setAction:@selector(chooseFolderAction:)];
+        [content addSubview:chooseButton];
+        [chooseButton release];
+
+        NSTextField *userLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 62, 100, 18)];
+        [userLabel setEditable:NO];
+        [userLabel setBezeled:NO];
+        [userLabel setDrawsBackground:NO];
+        [userLabel setStringValue:UTF8("ユーザー名:")];
+        [content addSubview:userLabel];
+        [userLabel release];
+
+        shareUserField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 64, 150, 22)];
+        [shareUserField setStringValue:UTF8("watermark")];
+        [content addSubview:shareUserField];
+        [shareUserField release];
+
+        NSTextField *passLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 94, 100, 18)];
+        [passLabel setEditable:NO];
+        [passLabel setBezeled:NO];
+        [passLabel setDrawsBackground:NO];
+        [passLabel setStringValue:UTF8("パスワード:")];
+        [content addSubview:passLabel];
+        [passLabel release];
+
+        sharePasswordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(115, h - 96, 150, 22)];
+        [[sharePasswordField cell] setPlaceholderString:UTF8("必須")];
+        [content addSubview:sharePasswordField];
+        [sharePasswordField release];
+
+        NSTextField *portLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 126, 100, 18)];
+        [portLabel setEditable:NO];
+        [portLabel setBezeled:NO];
+        [portLabel setDrawsBackground:NO];
+        [portLabel setStringValue:UTF8("ポート:")];
+        [content addSubview:portLabel];
+        [portLabel release];
+
+        sharePortField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 128, 80, 22)];
+        [sharePortField setStringValue:@"8091"];
+        [content addSubview:sharePortField];
+        [sharePortField release];
+
+        shareStartButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 168, 120, 26)];
+        [shareStartButton setTitle:UTF8("共有開始")];
+        [shareStartButton setBezelStyle:NSRoundedBezelStyle];
+        [shareStartButton setTarget:self];
+        [shareStartButton setAction:@selector(toggleSharingAction:)];
+        [content addSubview:shareStartButton];
+        [shareStartButton release];
+
+        shareStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 210, 460, 40)];
+        [shareStatusLabel setEditable:NO];
+        [shareStatusLabel setBezeled:NO];
+        [shareStatusLabel setDrawsBackground:NO];
+        [[shareStatusLabel cell] setWraps:YES];
+        [shareStatusLabel setStringValue:@""];
+        [content addSubview:shareStatusLabel];
+        [shareStatusLabel release];
+    }
+
+    [shareWindow makeKeyAndOrderFront:nil];
+}
+
+- (void)chooseFolderAction:(id)sender
+{
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    [panel setCanChooseDirectories:YES];
+    [panel setCanChooseFiles:NO];
+    [panel setAllowsMultipleSelection:NO];
+    int result = [panel runModalForDirectory:NSHomeDirectory() file:nil types:nil];
+    if (result == NSOKButton) {
+        NSArray *filenames = [panel filenames];
+        if ([filenames count] > 0) {
+            [shareFolderField setStringValue:[filenames objectAtIndex:0]];
+        }
+    }
+}
+
+- (void)toggleSharingAction:(id)sender
+{
+    if (sharing) {
+        [shareStartButton setEnabled:NO];
+        [shareStatusLabel setStringValue:UTF8("停止中...")];
+        [NSThread detachNewThreadSelector:@selector(doStopSharing) toTarget:self withObject:nil];
+        return;
+    }
+
+    NSString *folder = [shareFolderField stringValue];
+    NSString *user = [shareUserField stringValue];
+    NSString *pass = [sharePasswordField stringValue];
+    NSString *portStr = [sharePortField stringValue];
+
+    if ([folder length] == 0 || [folder isEqualToString:UTF8("(未選択)")]) {
+        [shareStatusLabel setStringValue:UTF8("共有フォルダを選択してください")];
+        return;
+    }
+    if ([user length] == 0 || [pass length] == 0) {
+        [shareStatusLabel setStringValue:UTF8("ユーザー名とパスワードを入力してください")];
+        return;
+    }
+
+    [shareStartButton setEnabled:NO];
+    [shareStatusLabel setStringValue:UTF8("共有を開始しています...")];
+
+    NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
+                           folder, @"folder", user, @"user", pass, @"pass",
+                           (portStr ? portStr : @"8091"), @"port", nil];
+    [NSThread detachNewThreadSelector:@selector(doStartSharing:) toTarget:self withObject:args];
+}
+
+- (void)doStartSharing:(NSDictionary *)args
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+    NSString *folder = [args objectForKey:@"folder"];
+    NSString *user = [args objectForKey:@"user"];
+    NSString *pass = [args objectForKey:@"pass"];
+    int port = [[args objectForKey:@"port"] intValue];
+    if (port <= 0) {
+        port = 8091;
+    }
+
+    LocalWebDAVServer *server = [[LocalWebDAVServer alloc] initWithRootPath:folder user:user password:pass];
+    BOOL started = NO;
+    int attempt;
+    int p = port;
+    for (attempt = 0; attempt < 10; attempt++) {
+        if ([server startOnPort:p]) {
+            started = YES;
+            break;
+        }
+        p++;
+    }
+
+    NSString *message;
+    if (started) {
+        localWebDAVServer = server;
+        NSString *ip = GetLocalIPAddress();
+        message = [NSString stringWithFormat:
+                   UTF8("共有中です。他の機器から下記へ接続してください:\nhttp://%@:%d/ (ユーザー名/パスワードが必要)"),
+                   ip, p];
+    } else {
+        [server release];
+        message = UTF8("共有の開始に失敗しました(ポートを確保できません)");
+    }
+
+    [self performSelectorOnMainThread:@selector(sharingStartedWithMessage:)
+                            withObject:message
+                         waitUntilDone:NO
+     ];
+    [pool release];
+}
+
+- (void)sharingStartedWithMessage:(NSString *)message
+{
+    sharing = (localWebDAVServer != nil);
+    [shareStatusLabel setStringValue:message];
+    [shareStartButton setEnabled:YES];
+    [shareStartButton setTitle:(sharing ? UTF8("共有停止") : UTF8("共有開始"))];
+}
+
+- (void)doStopSharing
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    if (localWebDAVServer != nil) {
+        [localWebDAVServer stop];
+        [localWebDAVServer release];
+        localWebDAVServer = nil;
+    }
+    [self performSelectorOnMainThread:@selector(sharingStoppedWithMessage:)
+                            withObject:UTF8("共有を停止しました")
+                         waitUntilDone:NO];
+    [pool release];
+}
+
+- (void)sharingStoppedWithMessage:(NSString *)message
+{
+    sharing = NO;
+    [shareStatusLabel setStringValue:message];
+    [shareStartButton setEnabled:YES];
+    [shareStartButton setTitle:UTF8("共有開始")];
+}
+
 - (void)dealloc
 {
     [entries release];
@@ -869,6 +1148,7 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     [webdavServer release];
     [mountPointPath release];
     [bookmarks release];
+    [localWebDAVServer release];
     [super dealloc];
 }
 

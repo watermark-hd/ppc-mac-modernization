@@ -3,6 +3,7 @@
 #include <smb2/libsmb2.h>
 
 @class WebDAVServer;
+@class LocalWebDAVServer;
 
 @interface AppDelegate : NSObject
 {
@@ -31,6 +32,17 @@
     NSString *mountPointPath;
 
     NSMutableArray *bookmarks; /* 接続に成功したsmb://URLの履歴。新しい順、最大10件 */
+
+    /* --- iBookをNAS化する(共有)機能 --- */
+    NSWindow *shareWindow;
+    NSTextField *shareFolderField;
+    NSTextField *shareUserField;
+    NSSecureTextField *sharePasswordField;
+    NSTextField *sharePortField;
+    NSButton *shareStartButton;
+    NSTextField *shareStatusLabel;
+    LocalWebDAVServer *localWebDAVServer;
+    BOOL sharing;
 }
 
 - (void)connectAction:(id)sender;
@@ -42,6 +54,15 @@
 /* NSComboBox データソース(履歴の一覧表示に使用) */
 - (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox;
 - (id)comboBox:(NSComboBox *)aComboBox objectValueForItemAtIndex:(int)index;
+
+/* --- iBookをNAS化する(共有)機能 --- */
+- (void)showShareWindow:(id)sender;
+- (void)chooseFolderAction:(id)sender;
+- (void)toggleSharingAction:(id)sender;
+- (void)doStartSharing:(NSDictionary *)args;
+- (void)sharingStartedWithMessage:(NSString *)message;
+- (void)doStopSharing;
+- (void)sharingStoppedWithMessage:(NSString *)message;
 
 - (void)doConnect:(NSDictionary *)args;
 - (void)connectSucceeded;
