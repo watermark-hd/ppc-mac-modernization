@@ -68,13 +68,15 @@ export NTLM_USER_FILE=~/.smb2_ntlm
 ### ビルド方法
 
 ```bash
-rsync -a AquaLink/ ibook:~/AquaLink/
-ssh ibook 'cd ~/AquaLink && make'
-open ~/AquaLink/AquaLink.app   # または実機でダブルクリック
+rsync -a AquaLink/ ibook:~/developer/AquaLink/
+ssh ibook 'cd ~/developer/AquaLink && make'
+open ~/developer/AquaLink/AquaLink.app   # または実機でダブルクリック
 ```
 
 `libsmb2.a`(静的ライブラリ)を直接リンクしているため、`make install` は不要。
-`$HOME/libsmb2` にビルド済みの libsmb2 ソースツリーがある前提。
+`$HOME/developer/libsmb2` にビルド済みの libsmb2 ソースツリーがある前提
+(iBook側の開発系フォルダは `~/developer/` 配下にまとめてある。旧パス`~/libsmb2`/`~/AquaLink`
+参照は移行済み)。
 
 ### ハマった点
 

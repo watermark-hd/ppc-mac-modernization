@@ -3,7 +3,7 @@ APPBUNDLE = $(APPNAME).app
 CONTENTS = $(APPBUNDLE)/Contents
 MACOS = $(CONTENTS)/MacOS
 
-LIBSMB2_DIR = $(HOME)/libsmb2
+LIBSMB2_DIR = $(HOME)/developer/libsmb2
 LIBSMB2_INC = $(LIBSMB2_DIR)/include
 LIBSMB2_A = $(LIBSMB2_DIR)/lib/.libs/libsmb2.a
 
