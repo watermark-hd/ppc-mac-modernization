@@ -47,6 +47,9 @@ Aquafox is often the only realistic browser left on G3-class hardware.
 - [Macintosh Garden](https://www.macintoshgarden.org/) and the
   [MacRumors PowerPC Macs forum](https://forums.macrumors.com/) — the usual gathering
   places for this community.
+- [AquaFinder](https://github.com/watermark-hd/AquaFinder) — a separate project by the
+  same author: a Tiger/Snow Leopard-style Finder skin for *modern* macOS. Unrelated to
+  PPC hardware, but built by the same "old Mac look" enthusiasm.
 
 ---
 
@@ -100,3 +103,6 @@ Aquafox が唯一現実的なブラウザという場面も多く、日本語圏
 - [Macintosh Garden](https://www.macintoshgarden.org/) と
   [MacRumors PowerPC Macs 板](https://forums.macrumors.com/) — このコミュニティの定番の
   集まり場所です。
+- [AquaFinder](https://github.com/watermark-hd/AquaFinder) — 同じ作者による別プロジェクト。
+  *現代の* macOS を Tiger/Snow Leopard 風の見た目にする Finder スキンです。PPC実機とは
+  無関係ですが、「懐かしいMacの見た目が好き」という同じ動機から生まれたものです。
