@@ -45,9 +45,14 @@
     NSSecureTextField *sharePasswordField;
     NSTextField *sharePortField;
     NSButton *shareStartButton;
+    NSButton *windowsGuideButton;
     NSTextField *shareStatusLabel;
     LocalWebDAVServer *localWebDAVServer;
     BOOL sharing;
+
+    /* Windows用接続ガイド */
+    NSWindow *windowsGuideWindow;
+    NSTextView *windowsGuideTextView;
 
     /* ウィンドウが無くても(起動時の自動再開などで)使える設定保持用 */
     NSString *shareUser;
@@ -70,6 +75,7 @@
 - (void)addFolderAction:(id)sender;
 - (void)removeFolderAction:(id)sender;
 - (void)toggleSharingAction:(id)sender;
+- (void)showWindowsGuideAction:(id)sender;
 - (void)doStartSharing:(NSDictionary *)args;
 - (void)sharingStartedWithMessage:(NSString *)message;
 - (void)doStopSharing;

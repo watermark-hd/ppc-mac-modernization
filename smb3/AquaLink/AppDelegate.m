@@ -1167,7 +1167,7 @@ static NSString *LoadKeychainPassword(void)
         [userLabel release];
 
         shareUserField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 224, 200, 22)];
-        [shareUserField setStringValue:(shareUser ? shareUser : UTF8("watermark"))];
+        [shareUserField setStringValue:(shareUser ? shareUser : UTF8("yamada"))];
         [content addSubview:shareUserField];
         [shareUserField release];
 
@@ -1207,6 +1207,14 @@ static NSString *LoadKeychainPassword(void)
         [shareStartButton setAction:@selector(toggleSharingAction:)];
         [content addSubview:shareStartButton];
         [shareStartButton release];
+
+        windowsGuideButton = [[NSButton alloc] initWithFrame:NSMakeRect(160, h - 328, 170, 26)];
+        [windowsGuideButton setTitle:UTF8("Windows用接続ガイド")];
+        [windowsGuideButton setBezelStyle:NSRoundedBezelStyle];
+        [windowsGuideButton setTarget:self];
+        [windowsGuideButton setAction:@selector(showWindowsGuideAction:)];
+        [content addSubview:windowsGuideButton];
+        [windowsGuideButton release];
 
         shareStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, w - 20, 70)];
         [shareStatusLabel setEditable:NO];
@@ -1321,6 +1329,100 @@ static NSString *LoadKeychainPassword(void)
                            sharesDict, @"shares", user, @"user", pass, @"pass",
                            [NSNumber numberWithInt:sharePortValue], @"port", nil];
     [NSThread detachNewThreadSelector:@selector(doStartSharing:) toTarget:self withObject:args];
+}
+
+/* ============ Windows用接続ガイド ============ */
+
+- (void)showWindowsGuideAction:(id)sender
+{
+    NSString *ip = GetLocalIPAddress();
+
+    NSMutableString *text = [NSMutableString string];
+    [text appendString:UTF8(
+        "Windows11のパソコンから、この共有(NAS化)フォルダに接続する手順です。\n"
+        "上から順番に、Windows側で操作してください。\n\n"
+        "※注意※\n"
+        "エクスプローラーに自動でドライブが出てくることはありません。\n"
+        "また、エクスプローラー左側の「ネットワーク」を開くとこのMacの名前が\n"
+        "見えることがありますが、それをダブルクリックしてもエラーになります\n"
+        "(そちらはこの手順とは別の古い方式で見えているだけです)。\n"
+        "必ず下記の【1】〜【3】の手順で接続してください。\n\n"
+        "【1】このプロジェクトの配布ページから接続用ファイルをダウンロードし、\n"
+        "展開(解凍)してください。\n\n"
+        "【2】展開してできたフォルダの中の connect-aqualink.bat を\n"
+        "ダブルクリックして起動してください。\n\n"
+        "【3】以下の項目を、聞かれた順番にそのまま入力してください:\n\n")];
+
+    [text appendFormat:UTF8("　①サーバーのIPアドレス:\n　　%@\n"), (ip ? ip : UTF8("(取得できません。共有を開始してから再度お試しください)"))];
+    [text appendString:UTF8("　　(この数字はMacのネットワーク環境によって変わります。表示が違う場合は\n"
+                             "　　Macの「システム環境設定 > ネットワーク」で現在のIPアドレスをご確認ください)\n\n")];
+
+    [text appendString:UTF8(
+        "　②このサーバーの名前(自由に決めて構いませんが、\n"
+        "　　ご自身の名前やWindows PCの名前と同じにしないでください。\n"
+        "　　名前が衝突していると繋がらないことがあります):\n"
+        "　　例) aqualink-mac\n\n")];
+
+    if ([shareFolders count] == 0) {
+        [text appendString:UTF8("　③共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
+    } else {
+        [text appendString:UTF8("　③共有名(共有フォルダが複数ある場合、繋ぎたいものを1つ選んで入力してください):\n")];
+        NSEnumerator *e = [shareFolders objectEnumerator];
+        NSDictionary *f;
+        while ((f = [e nextObject])) {
+            /* Finderで選んだフォルダ名はHFS+のNFD(濁点等が分離した形)のままのことがあり、
+               このテキストビューではNFDの結合文字が正しく描画されないことがあるため、
+               表示直前にNFC(結合済み)へ正規化する */
+            NSString *displayName = [[f objectForKey:@"name"] precomposedStringWithCanonicalMapping];
+            [text appendFormat:UTF8("　　・%@\n"), displayName];
+        }
+        [text appendString:@"\n"];
+    }
+
+    [text appendString:UTF8("　④ユーザー名:\n　　この画面の「共有設定」で決めたユーザー名を入力してください(例: yamada)。\n\n")];
+    [text appendString:UTF8(
+        "　⑤パスワード:\n"
+        "　　共有設定で決めたパスワードを入力してください(画面には表示されません)。\n"
+        "　　パソコンのログインパスワードをそのまま使っている方も多いです。\n\n")];
+
+    [text appendString:UTF8(
+        "【4】「Connected!」と表示されれば成功です。エクスプローラーの「PC」に\n"
+        "ドライブとして表示されます。\n\n"
+        "うまくいかない場合は、まず①のIPアドレスが変わっていないか確認してください\n"
+        "(iBook/Macを再起動するとIPアドレスが変わることがあります)。")];
+
+    if (windowsGuideWindow == nil) {
+        NSRect frame = NSMakeRect(180, 100, 480, 480);
+        windowsGuideWindow = [[NSWindow alloc] initWithContentRect:frame
+                                                           styleMask:(NSTitledWindowMask | NSClosableWindowMask |
+                                                                      NSResizableWindowMask)
+                                                             backing:NSBackingStoreBuffered
+                                                               defer:NO];
+        [windowsGuideWindow setTitle:UTF8("Windows用接続ガイド")];
+        [windowsGuideWindow setReleasedWhenClosed:NO];
+
+        NSScrollView *guideScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 480, 480)];
+        [guideScroll setHasVerticalScroller:YES];
+        [guideScroll setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+        [guideScroll setBorderType:NSNoBorder];
+
+        windowsGuideTextView = [[NSTextView alloc] initWithFrame:[guideScroll bounds]];
+        [windowsGuideTextView setEditable:NO];
+        [windowsGuideTextView setSelectable:YES];
+        [windowsGuideTextView setFont:[NSFont systemFontOfSize:13]];
+        [windowsGuideTextView setAutoresizingMask:NSViewWidthSizable];
+        [windowsGuideTextView setVerticallyResizable:YES];
+        [windowsGuideTextView setHorizontallyResizable:NO];
+        [windowsGuideTextView setTextContainerInset:NSMakeSize(10, 10)];
+
+        [guideScroll setDocumentView:windowsGuideTextView];
+        [windowsGuideTextView release];
+        [[windowsGuideWindow contentView] addSubview:guideScroll];
+        [guideScroll release];
+    }
+
+    [windowsGuideTextView setString:text];
+    [windowsGuideWindow makeKeyAndOrderFront:nil];
 }
 
 - (void)doStartSharing:(NSDictionary *)args
@@ -1438,7 +1540,7 @@ static NSString *LoadKeychainPassword(void)
 
     NSString *savedUser = [defaults stringForKey:@"AquaLinkShareUser"];
     [shareUser release];
-    shareUser = [(savedUser ? savedUser : UTF8("watermark")) retain];
+    shareUser = [(savedUser ? savedUser : UTF8("yamada")) retain];
 
     int savedPort = [defaults integerForKey:@"AquaLinkSharePort"];
     sharePortValue = (savedPort > 0) ? savedPort : 8091;
