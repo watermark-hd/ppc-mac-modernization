@@ -174,7 +174,11 @@ static NSString *LoadKeychainPassword(void)
     }
 
     /* --- ウィンドウ --- */
-    NSRect frame = NSMakeRect(100, 100, 700, 450);
+    /* 接続欄の上にラベル行を追加したため、旧レイアウト(高さ450)より22px高くする。
+       ラベル行・接続欄行は新しい高さ(h)基準、それより下の要素は旧来の高さ(oldH)基準のまま
+       絶対位置を変えずに済ませている。 */
+    float oldH = 450;
+    NSRect frame = NSMakeRect(100, 100, 700, oldH + 22);
     window = [[NSWindow alloc] initWithContentRect:frame
                                           styleMask:(NSTitledWindowMask | NSClosableWindowMask |
                                                       NSMiniaturizableWindowMask | NSResizableWindowMask)
@@ -188,22 +192,83 @@ static NSString *LoadKeychainPassword(void)
 
     [self loadBookmarks];
 
-    urlField = [[NSComboBox alloc] initWithFrame:NSMakeRect(10, h - 32, 380, 22)];
-    [urlField setStringValue:@"smb://user@server/share"];
+    NSString *savedUser = [[NSUserDefaults standardUserDefaults] stringForKey:@"AquaLinkLastUsername"];
+    NSString *savedShare = [[NSUserDefaults standardUserDefaults] stringForKey:@"AquaLinkLastShare"];
+
+    /* ラベル行(ユーザー名/アドレス/共有名/パスワードの取り違え防止のため常時表示) */
+    NSFont *captionFont = [NSFont systemFontOfSize:9];
+
+    NSTextField *userCaption = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 16, 90, 14)];
+    [userCaption setEditable:NO];
+    [userCaption setBezeled:NO];
+    [userCaption setDrawsBackground:NO];
+    [userCaption setFont:captionFont];
+    [userCaption setTextColor:[NSColor grayColor]];
+    [userCaption setStringValue:UTF8("ユーザー名")];
+    [content addSubview:userCaption];
+    [userCaption release];
+
+    NSTextField *addressCaption = [[NSTextField alloc] initWithFrame:NSMakeRect(105, h - 16, 190, 14)];
+    [addressCaption setEditable:NO];
+    [addressCaption setBezeled:NO];
+    [addressCaption setDrawsBackground:NO];
+    [addressCaption setFont:captionFont];
+    [addressCaption setTextColor:[NSColor grayColor]];
+    [addressCaption setStringValue:UTF8("アドレス(smb://は不要)")];
+    [content addSubview:addressCaption];
+    [addressCaption release];
+
+    NSTextField *shareCaption = [[NSTextField alloc] initWithFrame:NSMakeRect(300, h - 16, 110, 14)];
+    [shareCaption setEditable:NO];
+    [shareCaption setBezeled:NO];
+    [shareCaption setDrawsBackground:NO];
+    [shareCaption setFont:captionFont];
+    [shareCaption setTextColor:[NSColor grayColor]];
+    [shareCaption setStringValue:UTF8("共有名")];
+    [content addSubview:shareCaption];
+    [shareCaption release];
+
+    NSTextField *passwordCaption = [[NSTextField alloc] initWithFrame:NSMakeRect(415, h - 16, 110, 14)];
+    [passwordCaption setEditable:NO];
+    [passwordCaption setBezeled:NO];
+    [passwordCaption setDrawsBackground:NO];
+    [passwordCaption setFont:captionFont];
+    [passwordCaption setTextColor:[NSColor grayColor]];
+    [passwordCaption setStringValue:UTF8("パスワード")];
+    [content addSubview:passwordCaption];
+    [passwordCaption release];
+
+    usernameField = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 40, 90, 22)];
+    if ([savedUser length] > 0) {
+        [usernameField setStringValue:savedUser];
+    }
+    [usernameField setAutoresizingMask:(NSViewMinYMargin)];
+    [content addSubview:usernameField];
+    [usernameField release];
+
+    urlField = [[NSComboBox alloc] initWithFrame:NSMakeRect(105, h - 40, 190, 22)];
+    [urlField setStringValue:@""];
     [urlField setUsesDataSource:YES];
     [urlField setDataSource:self];
     [urlField setCompletes:NO];
-    [urlField setAutoresizingMask:(NSViewWidthSizable | NSViewMinYMargin)];
+    [urlField setAutoresizingMask:(NSViewMinYMargin)];
     [content addSubview:urlField];
     [urlField release];
 
-    passwordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(400, h - 32, 150, 22)];
-    [[passwordField cell] setPlaceholderString:UTF8("パスワード")];
+    shareField = [[NSTextField alloc] initWithFrame:NSMakeRect(300, h - 40, 110, 22)];
+    if ([savedShare length] > 0) {
+        [shareField setStringValue:savedShare];
+    }
+    [shareField setAutoresizingMask:(NSViewMinXMargin | NSViewMinYMargin)];
+    [content addSubview:shareField];
+    [shareField release];
+
+    passwordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(415, h - 40, 110, 22)];
     [passwordField setAutoresizingMask:(NSViewMinXMargin | NSViewMinYMargin)];
     [content addSubview:passwordField];
     [passwordField release];
 
-    connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, h - 34, 130, 26)];
+    connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(530, h - 42, 100, 26)];
     [connectButton setTitle:UTF8("接続")];
     [connectButton setBezelStyle:NSRoundedBezelStyle];
     [connectButton setTarget:self];
@@ -212,7 +277,7 @@ static NSString *LoadKeychainPassword(void)
     [content addSubview:connectButton];
     [connectButton release];
 
-    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, h - 60, 480, 18)];
+    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, oldH - 60, 480, 18)];
     [pathLabel setEditable:NO];
     [pathLabel setBezeled:NO];
     [pathLabel setDrawsBackground:NO];
@@ -221,7 +286,7 @@ static NSString *LoadKeychainPassword(void)
     [content addSubview:pathLabel];
     [pathLabel release];
 
-    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, h - 62, 50, 22)];
+    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, oldH - 62, 50, 22)];
     [upButton setTitle:UTF8("上へ")];
     [upButton setBezelStyle:NSRoundedBezelStyle];
     [upButton setTarget:self];
@@ -230,7 +295,7 @@ static NSString *LoadKeychainPassword(void)
     [content addSubview:upButton];
     [upButton release];
 
-    mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, h - 62, 130, 22)];
+    mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, oldH - 62, 130, 22)];
     [mountButton setTitle:UTF8("Finderに接続")];
     [mountButton setBezelStyle:NSRoundedBezelStyle];
     [mountButton setTarget:self];
@@ -239,7 +304,7 @@ static NSString *LoadKeychainPassword(void)
     [content addSubview:mountButton];
     [mountButton release];
 
-    NSButton *shareSettingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 92, 200, 22)];
+    NSButton *shareSettingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, oldH - 92, 200, 22)];
     [shareSettingsButton setTitle:UTF8("このMacを共有(NAS化)...")];
     [shareSettingsButton setBezelStyle:NSRoundedBezelStyle];
     [shareSettingsButton setTarget:self];
@@ -248,7 +313,7 @@ static NSString *LoadKeychainPassword(void)
     [content addSubview:shareSettingsButton];
     [shareSettingsButton release];
 
-    scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 30, w - 20, h - 130)];
+    scrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 30, w - 20, oldH - 130)];
     [scrollView setHasVerticalScroller:YES];
     [scrollView setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
 
@@ -256,6 +321,7 @@ static NSString *LoadKeychainPassword(void)
     [tableView setDataSource:self];
     [tableView setDelegate:self];
     [tableView setTarget:self];
+    [tableView setUsesAlternatingRowBackgroundColors:YES];
     [tableView setDoubleAction:@selector(rowDoubleClicked:)];
     [tableView setDraggingSourceOperationMask:NSDragOperationCopy forLocal:NO];
     [tableView registerForDraggedTypes:[NSArray arrayWithObject:NSFilenamesPboardType]];
@@ -263,6 +329,8 @@ static NSString *LoadKeychainPassword(void)
     NSTableColumn *nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
     [[nameCol headerCell] setStringValue:UTF8("名前")];
     [nameCol setWidth:340];
+    /* 編集可能のままだとダブルクリックがフォルダを開かず名前変更モードに入ってしまうため */
+    [nameCol setEditable:NO];
     [tableView addTableColumn:nameCol];
     [nameCol release];
 
@@ -335,8 +403,22 @@ static NSString *LoadKeychainPassword(void)
 
 - (void)connectAction:(id)sender
 {
-    NSString *urlString = [urlField stringValue];
+    NSString *username = [usernameField stringValue];
+    NSString *address = [urlField stringValue];
+    NSString *share = [shareField stringValue];
     NSString *password = [passwordField stringValue];
+
+    /* ユーザー名・アドレス・共有名を別欄にしたことで入力ミスを防ぎつつ、
+       内部的には従来通り "smb://user@address/share" 形式のURLを組み立てて接続処理に渡す。
+       ユーザー名が空ならゲスト接続として扱う(従来のsmb2_parse_urlの挙動と同じ)。 */
+    NSString *userPart = ([username length] > 0)
+        ? [NSString stringWithFormat:@"%@@", username]
+        : @"";
+    NSString *urlString = [NSString stringWithFormat:@"smb://%@%@/%@", userPart, address, share];
+
+    [[NSUserDefaults standardUserDefaults] setObject:username forKey:@"AquaLinkLastUsername"];
+    [[NSUserDefaults standardUserDefaults] setObject:share forKey:@"AquaLinkLastShare"];
+
     [connectButton setEnabled:NO];
     [statusLabel setStringValue:UTF8("接続中...")];
 

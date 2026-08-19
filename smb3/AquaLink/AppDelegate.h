@@ -9,7 +9,9 @@
 {
     NSWindow *window;
 
+    NSTextField *usernameField;
     NSComboBox *urlField;
+    NSTextField *shareField;
     NSSecureTextField *passwordField;
     NSButton *connectButton;
     NSButton *upButton;
