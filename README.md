@@ -6,6 +6,24 @@ Mac community.
 
 Two independent sub-projects live in this repository:
 
+## ⚠️ Before you use this
+
+- **Personal hobby project, provided as-is, no warranty.** Tested only on the
+  author's own hardware/network; your mileage may vary.
+- **AquaLink's WebDAV NAS server sends passwords as HTTP Basic Auth over plain,
+  unencrypted HTTP** (there was no practical alternative on this OS/hardware — see
+  [`smb3/README.md`](smb3/README.md) for why). Only use this on a trusted home LAN.
+  **Do not expose it to the public internet.**
+- `windows-setup/connect-aqualink.bat` modifies Windows registry settings
+  (`WebClient` service Basic-auth policy) system-wide to make the above work without
+  the user having to touch `regedit` by hand. Review the script before running it.
+- These machines run long-unsupported, unpatched operating systems (Tiger/Leopard).
+  Treat them as inherently insecure and keep them off untrusted networks regardless
+  of what this software does.
+- Back up anything important before installing/building on real hardware — some of
+  this touches system-level settings (firewall rules, LaunchDaemons) as well as app
+  files.
+
 ## AquaLink — SMB3 client & WebDAV NAS server for PPC Mac
 
 **[`smb3/AquaLink/`](smb3/AquaLink/)**
@@ -63,6 +81,24 @@ above.
 貢献を目的としています。
 
 このリポジトリには独立した2つのサブプロジェクトが入っています。
+
+## ⚠️ 利用前の注意事項
+
+- **個人の趣味プロジェクトであり、無保証で提供しています。** 作者自身のハードウェア・
+  ネットワーク環境でのみ動作確認しており、環境によって挙動が異なる可能性があります。
+- **AquaLinkのWebDAV NASサーバー機能は、パスワードを暗号化していない平文HTTP上で
+  Basic認証として送信します**(このOS・ハードウェアの制約上、現実的な代替手段が
+  ありませんでした。詳細は[`smb3/README.md`](smb3/README.md)参照)。**信頼できる
+  自宅LAN内でのみ使用してください。インターネットに直接公開しないでください。**
+- `windows-setup/connect-aqualink.bat`は、上記を利用者が`regedit`を手作業で触らずに
+  済むよう、Windowsのレジストリ設定(`WebClient`サービスのBasic認証ポリシー)を
+  システム全体に対して変更します。実行前にスクリプトの中身をご確認ください。
+- これらの実機は、長期間サポートが切れた未更新のOS(Tiger/Leopard)で動作しています。
+  本ソフトウェアの内容に関わらず、本質的にセキュリティ上のリスクがあるものとして扱い、
+  信頼できないネットワークには接続しないでください。
+- 実機へのインストール・ビルドの前に、大事なデータのバックアップを取ってください。
+  アプリ本体だけでなく、ファイアウォールのルールやLaunchDaemonなど、システムレベルの
+  設定にも変更が及ぶ箇所があります。
 
 ## AquaLink — PPC Mac 向け SMB3クライアント & WebDAV NASサーバー
 
