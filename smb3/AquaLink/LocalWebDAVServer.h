@@ -21,7 +21,7 @@
 
 - (void)acceptLoop;
 - (void)handleConnection:(NSNumber *)fdNumber;
-- (BOOL)checkAuth:(NSDictionary *)headers;
+- (BOOL)checkAuth:(NSDictionary *)headers method:(NSString *)method path:(NSString *)path;
 - (void)sendUnauthorized:(int)fd;
 - (BOOL)readRequestFromSocket:(int)fd
                         method:(NSString **)methodOut
@@ -33,9 +33,11 @@
 - (NSString *)localPathForWebDAVPath:(NSString *)path;
 - (void)handleOPTIONS:(int)fd;
 - (NSString *)responseEntryForHref:(NSString *)href isDir:(BOOL)isDir
-                               size:(unsigned long long)size mtime:(time_t)mtime;
-- (void)handlePROPFINDRoot:(NSString *)path depth:(NSString *)depth toSocket:(int)fd;
-- (void)handlePROPFIND:(NSString *)path depth:(NSString *)depth toSocket:(int)fd;
+                               size:(unsigned long long)size mtime:(time_t)mtime
+                               host:(NSString *)host;
+- (void)handlePROPFINDRoot:(NSString *)path depth:(NSString *)depth host:(NSString *)host toSocket:(int)fd;
+- (void)handlePROPFIND:(NSString *)path depth:(NSString *)depth host:(NSString *)host toSocket:(int)fd;
+- (void)handlePROPPATCH:(NSString *)path body:(NSData *)body host:(NSString *)host toSocket:(int)fd;
 - (void)handleGET:(NSString *)path toSocket:(int)fd includeBody:(BOOL)includeBody;
 - (void)handlePUT:(NSString *)path body:(NSData *)body toSocket:(int)fd;
 - (void)handleDELETE:(NSString *)path toSocket:(int)fd;

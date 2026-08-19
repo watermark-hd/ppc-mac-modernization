@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>net.aqualink.portforward</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/sbin/ipfw</string>
+		<string>add</string>
+		<string>100</string>
+		<string>fwd</string>
+		<string>127.0.0.1,8091</string>
+		<string>tcp</string>
+		<string>from</string>
+		<string>any</string>
+		<string>to</string>
+		<string>me</string>
+		<string>80</string>
+		<string>in</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>
