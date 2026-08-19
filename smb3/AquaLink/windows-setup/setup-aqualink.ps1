@@ -2,17 +2,23 @@
 # Registry/hosts changes that need admin rights are auto-elevated;
 # the actual "net use" drive mapping is run WITHOUT admin rights on purpose
 # (a drive mapped from an elevated session is invisible in normal Explorer).
-
-# --- Edit these for your environment ---
-$ServerIP = "192.168.11.2"
-$ServerName = "aqualink-ibook"
-$ShareName = "Pictures"
-$ShareUser = "watermark"
-$SharePassword = "CHANGE_ME"
-$DriveLetter = "Z:"
-# ----------------------------------------
+#
+# This script prompts for your server's details interactively - nothing to
+# edit in the file itself. The prompts are in English to avoid a known
+# Windows PowerShell 5.1 bug where non-ASCII characters in a script file
+# (without a UTF-8 BOM) cause parse errors; the VALUES you type in response
+# (server name, share name, etc.) can be in any language.
 
 $ErrorActionPreference = "Stop"
+
+function Read-RequiredHost {
+    param($Prompt)
+    $value = Read-Host $Prompt
+    while ([string]::IsNullOrWhiteSpace($value)) {
+        $value = Read-Host "$Prompt (required)"
+    }
+    return $value
+}
 
 function Test-RegistryValue {
     param($Path, $Name, $Expected)
@@ -21,6 +27,19 @@ function Test-RegistryValue {
 }
 
 Write-Host "=== AquaLink connection setup ===" -ForegroundColor Cyan
+Write-Host "Enter the details of the AquaLink share you want to connect to."
+Write-Host ""
+
+$ServerIP = Read-RequiredHost "Server IP address (e.g. 192.168.1.5)"
+$ServerName = Read-RequiredHost "A short local name for this server (e.g. aqualink-nas)"
+$ShareName = Read-RequiredHost "Share name on the server (e.g. Pictures)"
+$ShareUser = Read-RequiredHost "Username"
+$SecurePassword = Read-Host "Password" -AsSecureString
+$SharePassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
+    [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword))
+$DriveLetter = "Z:"
+
+Write-Host ""
 
 # 1. WebClient Basic auth settings (allow Basic auth over plain HTTP)
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
