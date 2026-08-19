@@ -31,14 +31,17 @@ As far as we know, this is the first working SMB2/3 client for PowerPC Mac OS X.
 
 ## Aquafox Japanese localization
 
-**[`aquafox_ja/`](aquafox_ja/)**
+**→ [aquafox-japanese-langpack](https://github.com/watermark-hd/aquafox-japanese-langpack)**
+(separate repository)
 
 A Japanese (`ja`) locale for [Aquafox](https://tenfourfox.jp/) (the actively
 maintained TenFourFox fork for PowerPC Macs), built from Mozilla's official
 Firefox 45.9.0esr `ja` langpack plus translations for the ~80 Aquafox/TenFourFox-specific
 UI strings not present in stock Firefox. Aquafox ships with de/es-ES/en-US/fi/fr/it/pl/ru/sv-SE
 but no Japanese locale — this fills that gap for Japanese-speaking PPC users, for whom
-Aquafox is often the only realistic browser left on G3-class hardware.
+Aquafox is often the only realistic browser left on G3-class hardware. The finished
+langpack, install instructions, and full string list live in the dedicated repo linked
+above.
 
 ## Related resources
 
@@ -86,7 +89,8 @@ AquaLink は2つの機能を持っています。
 
 ## Aquafox 日本語化
 
-**[`aquafox_ja/`](aquafox_ja/)**
+**→ [aquafox-japanese-langpack](https://github.com/watermark-hd/aquafox-japanese-langpack)**
+(別リポジトリ)
 
 PowerPC Mac 向けに現役開発が続いている TenFourFox のフォーク、[Aquafox](https://tenfourfox.jp/)
 用の日本語(`ja`)ロケールです。Firefox 45.9.0esr の公式 `ja` 言語パックをベースに、
@@ -94,7 +98,8 @@ Aquafox/TenFourFox 独自に追加された約80件のUI文字列(標準の Fire
 を翻訳して統合しています。Aquafox は de/es-ES/en-US/fi/fr/it/pl/ru/sv-SE の9言語のみ用意されて
 おり日本語ロケールが存在しなかったため、この空白を埋めるものです。G3世代のハードでは
 Aquafox が唯一現実的なブラウザという場面も多く、日本語圏の PPC ユーザーにとっての課題を
-解決します。
+解決します。完成版の言語パック・インストール手順・全翻訳文字列は、上記の専用リポジトリに
+まとまっています。
 
 ## 関連リンク
 
