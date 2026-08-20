@@ -12,6 +12,115 @@
    C文字列(生バイト列、コンパイラによる再解釈なし)からUTF-8として明示的に組み立てる */
 #define UTF8(cstr) [NSString stringWithUTF8String:(cstr)]
 
+/* --- 表示言語の自動切り替え ---
+   .lprojやNSBundleのローカライズ機構は使わず、日本語原文をキーにした対訳表を
+   コード内に直接持つ単純な仕組みにしている(ビルド設定・Makefileの変更が不要、
+   Tiger世代のNSBundleの言語選択の細かい挙動に依存しない、というのが理由)。
+   Localizable.strings相当のものは EnglishTranslations() の1箇所にまとまっている。
+   訳が無いキーは日本語のまま出す(表示が崩れるより安全)。 */
+static BOOL UseEnglish(void)
+{
+    static BOOL checked = NO;
+    static BOOL useEnglish = NO;
+    if (!checked) {
+        NSArray *langs = [[NSUserDefaults standardUserDefaults] objectForKey:@"AppleLanguages"];
+        NSString *primary = ([langs count] > 0) ? [langs objectAtIndex:0] : nil;
+        useEnglish = (primary != nil && ![primary hasPrefix:@"ja"]);
+        checked = YES;
+    }
+    return useEnglish;
+}
+
+static NSDictionary *EnglishTranslations(void)
+{
+    static NSDictionary *table = nil;
+    if (table == nil) {
+        table = [[NSDictionary alloc] initWithObjectsAndKeys:
+            @"Share Settings...", UTF8("共有設定..."),
+            @"Quit AquaLink", UTF8("AquaLinkを終了"),
+            @"Username", UTF8("ユーザー名"),
+            @"Address (no smb:// needed)", UTF8("アドレス(smb://は不要)"),
+            @"Share Name", UTF8("共有名"),
+            @"Password", UTF8("パスワード"),
+            @"Connect", UTF8("接続"),
+            @"Up", UTF8("上へ"),
+            @"Connect in Finder", UTF8("Finderに接続"),
+            @"Share This Mac (as NAS)...", UTF8("このMacを共有(NAS化)..."),
+            @"Name", UTF8("名前"),
+            @"Kind", UTF8("種類"),
+            @"Size", UTF8("サイズ"),
+            @"Not Connected", UTF8("未接続"),
+            @"Connecting...", UTF8("接続中..."),
+            @"Failed to initialize the SMB2 context", UTF8("smb2コンテキストの初期化に失敗しました"),
+            @"Connected", UTF8("接続しました"),
+            @"%lu items", UTF8("%lu 件"),
+            @"Loading...", UTF8("読み込み中..."),
+            @"Folder", UTF8("フォルダ"),
+            @"File", UTF8("ファイル"),
+            @"Failed to download %@", UTF8("%@ のダウンロードに失敗しました"),
+            @"Uploading...", UTF8("アップロード中..."),
+            @"Failed to upload %d item(s)", UTF8("%d件のアップロードに失敗しました"),
+            @"Please connect first", UTF8("先に接続してください"),
+            @"Connecting in Finder...", UTF8("Finderに接続中..."),
+            @"Failed to start the WebDAV server", UTF8("WebDAVサーバーの起動に失敗しました"),
+            @"Mount failed: %@", UTF8("マウント失敗: %@"),
+            @"Mounted at %@", UTF8("%@ にマウントしました"),
+            @"Disconnect", UTF8("取り外す"),
+            @"Disconnecting...", UTF8("取り外し中..."),
+            @"Disconnected", UTF8("取り外しました"),
+            @"Failed to disconnect. Try ejecting from Finder, or try again.", UTF8("取り外しに失敗しました。Finderから取り出すか、再度お試しください"),
+            @"Share This Mac (as NAS)", UTF8("このMacを共有(NAS化)"),
+            @"Shared Folders:", UTF8("共有フォルダ一覧:"),
+            @"Folder Path", UTF8("フォルダパス"),
+            @"Username:", UTF8("ユーザー名:"),
+            @"Password:", UTF8("パスワード:"),
+            @"Required", UTF8("必須"),
+            @"Port:", UTF8("ポート:"),
+            @"Stop Sharing", UTF8("共有停止"),
+            @"Start Sharing", UTF8("共有開始"),
+            @"Windows Connection Guide", UTF8("Windows用接続ガイド"),
+            @"Stopping...", UTF8("停止中..."),
+            @"Please add at least one shared folder", UTF8("共有フォルダを1つ以上追加してください"),
+            @"Please enter a username and password", UTF8("ユーザー名とパスワードを入力してください"),
+            @"Starting sharing...", UTF8("共有を開始しています..."),
+            @"Sharing is active (%d folder(s)). Connect from another device at:\nhttp://%@:%d/ (username/password required)",
+              UTF8("共有中です(%d フォルダ)。他の機器から下記へ接続してください:\nhttp://%@:%d/ (ユーザー名/パスワードが必要)"),
+            @"Failed to start sharing (couldn't bind the port)", UTF8("共有の開始に失敗しました(ポートを確保できません)"),
+            @"Sharing stopped", UTF8("共有を停止しました"),
+            @"URL parse error: %s", UTF8("URL解析エラー: %s"),
+            @"Failed to list directory: %s", UTF8("一覧取得失敗: %s"),
+            @"Connection failed: The username or password appears to be incorrect.\n(Details: %@)",
+              UTF8("接続失敗: ユーザー名またはパスワードが正しくないようです。\n(詳細: %@)"),
+            @"Connection failed: The specified share name was not found. Please check the spelling.\n(Details: %@)",
+              UTF8("接続失敗: 指定した共有名が見つかりません。共有名のつづりを確認してください。\n(詳細: %@)"),
+            @"Connection failed: Access was denied. Please check the username, password, and share permissions.\n(Details: %@)",
+              UTF8("接続失敗: アクセスが拒否されました。ユーザー名・パスワード・共有の権限を確認してください。\n(詳細: %@)"),
+            @"Connection failed: The server address could not be found. Please check the spelling.\n(Details: %@)",
+              UTF8("接続失敗: サーバーのアドレスが見つかりません。アドレスのつづりを確認してください。\n(詳細: %@)"),
+            @"Connection failed: Could not reach the server. Please check its power, network connection, and the address.\n(Details: %@)",
+              UTF8("接続失敗: サーバーに接続できません。電源やネットワーク接続、アドレスを確認してください。\n(詳細: %@)"),
+            @"Connection failed: Timed out. Please check your network connection.\n(Details: %@)",
+              UTF8("接続失敗: タイムアウトしました。ネットワーク接続を確認してください。\n(詳細: %@)"),
+            @"Connection failed: Disconnected by the server mid-communication. This device may not support SMB2/3 (e.g. an older router's built-in sharing feature).\n(Details: %@)",
+              UTF8("接続失敗: 通信の途中でサーバー側から切断されました。この機器がSMB2/3に対応していない可能性があります(古いルーター内蔵の共有機能など)。\n(詳細: %@)"),
+            @"Connection failed: %@", UTF8("接続失敗: %@"),
+            nil];
+    }
+    return table;
+}
+
+/* 日本語原文(cstr)を、UseEnglish()なら英訳へ、そうでなければそのまま返す */
+#define L(cstr) LocalizedString(cstr)
+static NSString *LocalizedString(const char *cstr)
+{
+    NSString *ja = UTF8(cstr);
+    if (!UseEnglish()) {
+        return ja;
+    }
+    NSString *en = [EnglishTranslations() objectForKey:ja];
+    return en ? en : ja;
+}
+
 /* ディレクトリを先に、続いてファイル名の昇順でソートする比較関数 */
 static int CompareEntries(id a, id b, void *context)
 {
@@ -66,7 +175,7 @@ static NSString *GetLocalIPAddress(void)
         }
         freeifaddrs(interfaces);
     }
-    return address ? address : @"(IP不明)";
+    return address ? address : UTF8("(IP不明)");
 }
 
 /* --- キーチェーン: パスワードを平文でNSUserDefaultsに置かないための保存先 ---
@@ -145,29 +254,29 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSString *lower = [raw lowercaseString];
 
     if ([lower rangeOfString:@"logon_failure"].location != NSNotFound) {
-        return [NSString stringWithFormat:UTF8("接続失敗: ユーザー名またはパスワードが正しくないようです。\n(詳細: %@)"), raw];
+        return [NSString stringWithFormat:L("接続失敗: ユーザー名またはパスワードが正しくないようです。\n(詳細: %@)"), raw];
     }
     if ([lower rangeOfString:@"bad_network_name"].location != NSNotFound) {
-        return [NSString stringWithFormat:UTF8("接続失敗: 指定した共有名が見つかりません。共有名のつづりを確認してください。\n(詳細: %@)"), raw];
+        return [NSString stringWithFormat:L("接続失敗: 指定した共有名が見つかりません。共有名のつづりを確認してください。\n(詳細: %@)"), raw];
     }
     if ([lower rangeOfString:@"access_denied"].location != NSNotFound) {
-        return [NSString stringWithFormat:UTF8("接続失敗: アクセスが拒否されました。ユーザー名・パスワード・共有の権限を確認してください。\n(詳細: %@)"), raw];
+        return [NSString stringWithFormat:L("接続失敗: アクセスが拒否されました。ユーザー名・パスワード・共有の権限を確認してください。\n(詳細: %@)"), raw];
     }
     if ([lower rangeOfString:@"can not resolve"].location != NSNotFound ||
         [lower rangeOfString:@"invalid address"].location != NSNotFound) {
-        return [NSString stringWithFormat:UTF8("接続失敗: サーバーのアドレスが見つかりません。アドレスのつづりを確認してください。\n(詳細: %@)"), raw];
+        return [NSString stringWithFormat:L("接続失敗: サーバーのアドレスが見つかりません。アドレスのつづりを確認してください。\n(詳細: %@)"), raw];
     }
     if ([lower rangeOfString:@"connect failed with errno"].location != NSNotFound ||
         [lower rangeOfString:@"socket connect failed"].location != NSNotFound) {
-        return [NSString stringWithFormat:UTF8("接続失敗: サーバーに接続できません。電源やネットワーク接続、アドレスを確認してください。\n(詳細: %@)"), raw];
+        return [NSString stringWithFormat:L("接続失敗: サーバーに接続できません。電源やネットワーク接続、アドレスを確認してください。\n(詳細: %@)"), raw];
     }
     if ([lower rangeOfString:@"timeout expired"].location != NSNotFound) {
-        return [NSString stringWithFormat:UTF8("接続失敗: タイムアウトしました。ネットワーク接続を確認してください。\n(詳細: %@)"), raw];
+        return [NSString stringWithFormat:L("接続失敗: タイムアウトしました。ネットワーク接続を確認してください。\n(詳細: %@)"), raw];
     }
     if ([lower rangeOfString:@"pollhup"].location != NSNotFound) {
-        return [NSString stringWithFormat:UTF8("接続失敗: 通信の途中でサーバー側から切断されました。この機器がSMB2/3に対応していない可能性があります(古いルーター内蔵の共有機能など)。\n(詳細: %@)"), raw];
+        return [NSString stringWithFormat:L("接続失敗: 通信の途中でサーバー側から切断されました。この機器がSMB2/3に対応していない可能性があります(古いルーター内蔵の共有機能など)。\n(詳細: %@)"), raw];
     }
-    return [NSString stringWithFormat:UTF8("接続失敗: %@"), raw];
+    return [NSString stringWithFormat:L("接続失敗: %@"), raw];
 }
 
 @implementation AppDelegate
@@ -217,13 +326,13 @@ static NSString *FriendlyConnectError(NSString *raw)
     [appMenu setTitle:[appMenuItem title]];
     [NSApp setAppleMenu:appMenu];
 
-    NSMenuItem *shareMenuItem = [[NSMenuItem alloc] initWithTitle:UTF8("共有設定...")
+    NSMenuItem *shareMenuItem = [[NSMenuItem alloc] initWithTitle:L("共有設定...")
                                                              action:@selector(showShareWindow:)
                                                       keyEquivalent:@""];
     [shareMenuItem setTarget:self];
     [appMenu addItem:shareMenuItem];
     [shareMenuItem release];
-    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit AquaLink"
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:L("AquaLinkを終了")
                                                         action:@selector(terminate:)
                                                  keyEquivalent:@"q"];
     [quitItem setTarget:NSApp];
@@ -266,7 +375,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [userCaption setDrawsBackground:NO];
     [userCaption setFont:captionFont];
     [userCaption setTextColor:[NSColor grayColor]];
-    [userCaption setStringValue:UTF8("ユーザー名")];
+    [userCaption setStringValue:L("ユーザー名")];
     [content addSubview:userCaption];
     [userCaption release];
 
@@ -276,7 +385,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [addressCaption setDrawsBackground:NO];
     [addressCaption setFont:captionFont];
     [addressCaption setTextColor:[NSColor grayColor]];
-    [addressCaption setStringValue:UTF8("アドレス(smb://は不要)")];
+    [addressCaption setStringValue:L("アドレス(smb://は不要)")];
     [content addSubview:addressCaption];
     [addressCaption release];
 
@@ -286,7 +395,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [shareCaption setDrawsBackground:NO];
     [shareCaption setFont:captionFont];
     [shareCaption setTextColor:[NSColor grayColor]];
-    [shareCaption setStringValue:UTF8("共有名")];
+    [shareCaption setStringValue:L("共有名")];
     [content addSubview:shareCaption];
     [shareCaption release];
 
@@ -296,7 +405,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [passwordCaption setDrawsBackground:NO];
     [passwordCaption setFont:captionFont];
     [passwordCaption setTextColor:[NSColor grayColor]];
-    [passwordCaption setStringValue:UTF8("パスワード")];
+    [passwordCaption setStringValue:L("パスワード")];
     [content addSubview:passwordCaption];
     [passwordCaption release];
 
@@ -338,7 +447,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     }
 
     connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(530, h - 42, 100, 26)];
-    [connectButton setTitle:UTF8("接続")];
+    [connectButton setTitle:L("接続")];
     [connectButton setBezelStyle:NSRoundedBezelStyle];
     [connectButton setTarget:self];
     [connectButton setAction:@selector(connectAction:)];
@@ -356,7 +465,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [pathLabel release];
 
     upButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, oldH - 62, 50, 22)];
-    [upButton setTitle:UTF8("上へ")];
+    [upButton setTitle:L("上へ")];
     [upButton setBezelStyle:NSRoundedBezelStyle];
     [upButton setTarget:self];
     [upButton setAction:@selector(upAction:)];
@@ -365,7 +474,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [upButton release];
 
     mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, oldH - 62, 130, 22)];
-    [mountButton setTitle:UTF8("Finderに接続")];
+    [mountButton setTitle:L("Finderに接続")];
     [mountButton setBezelStyle:NSRoundedBezelStyle];
     [mountButton setTarget:self];
     [mountButton setAction:@selector(mountAction:)];
@@ -374,7 +483,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [mountButton release];
 
     NSButton *shareSettingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, oldH - 92, 200, 22)];
-    [shareSettingsButton setTitle:UTF8("このMacを共有(NAS化)...")];
+    [shareSettingsButton setTitle:L("このMacを共有(NAS化)...")];
     [shareSettingsButton setBezelStyle:NSRoundedBezelStyle];
     [shareSettingsButton setTarget:self];
     [shareSettingsButton setAction:@selector(showShareWindow:)];
@@ -396,7 +505,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [tableView registerForDraggedTypes:[NSArray arrayWithObject:NSFilenamesPboardType]];
 
     NSTableColumn *nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
-    [[nameCol headerCell] setStringValue:UTF8("名前")];
+    [[nameCol headerCell] setStringValue:L("名前")];
     [nameCol setWidth:340];
     /* 編集可能のままだとダブルクリックがフォルダを開かず名前変更モードに入ってしまうため */
     [nameCol setEditable:NO];
@@ -404,13 +513,13 @@ static NSString *FriendlyConnectError(NSString *raw)
     [nameCol release];
 
     NSTableColumn *typeCol = [[NSTableColumn alloc] initWithIdentifier:@"type"];
-    [[typeCol headerCell] setStringValue:UTF8("種類")];
+    [[typeCol headerCell] setStringValue:L("種類")];
     [typeCol setWidth:100];
     [tableView addTableColumn:typeCol];
     [typeCol release];
 
     NSTableColumn *sizeCol = [[NSTableColumn alloc] initWithIdentifier:@"size"];
-    [[sizeCol headerCell] setStringValue:UTF8("サイズ")];
+    [[sizeCol headerCell] setStringValue:L("サイズ")];
     [sizeCol setWidth:100];
     [tableView addTableColumn:sizeCol];
     [sizeCol release];
@@ -424,7 +533,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [statusLabel setEditable:NO];
     [statusLabel setBezeled:NO];
     [statusLabel setDrawsBackground:NO];
-    [statusLabel setStringValue:UTF8("未接続")];
+    [statusLabel setStringValue:L("未接続")];
     [statusLabel setAutoresizingMask:(NSViewWidthSizable | NSViewMinYMargin)];
     [content addSubview:statusLabel];
     [statusLabel release];
@@ -489,7 +598,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [[NSUserDefaults standardUserDefaults] setObject:share forKey:@"AquaLinkLastShare"];
 
     [connectButton setEnabled:NO];
-    [statusLabel setStringValue:UTF8("接続中...")];
+    [statusLabel setStringValue:L("接続中...")];
 
     NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
                            urlString, @"url",
@@ -515,7 +624,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     struct smb2_context *ctx = smb2_init_context();
     if (ctx == NULL) {
         [self performSelectorOnMainThread:@selector(connectFailed:)
-                                withObject:UTF8("smb2コンテキストの初期化に失敗しました")
+                                withObject:L("smb2コンテキストの初期化に失敗しました")
                              waitUntilDone:NO];
         [pool release];
         return;
@@ -523,7 +632,7 @@ static NSString *FriendlyConnectError(NSString *raw)
 
     struct smb2_url *url = smb2_parse_url(ctx, [urlString UTF8String]);
     if (url == NULL) {
-        NSString *err = [NSString stringWithFormat:UTF8("URL解析エラー: %s"), smb2_get_error(ctx)];
+        NSString *err = [NSString stringWithFormat:L("URL解析エラー: %s"), smb2_get_error(ctx)];
         smb2_destroy_context(ctx);
         [self performSelectorOnMainThread:@selector(connectFailed:) withObject:err waitUntilDone:NO];
         [pool release];
@@ -567,7 +676,7 @@ static NSString *FriendlyConnectError(NSString *raw)
 
 - (void)connectSucceeded
 {
-    [statusLabel setStringValue:UTF8("接続しました")];
+    [statusLabel setStringValue:L("接続しました")];
     [connectButton setEnabled:YES];
 
     NSString *address = [urlField stringValue];
@@ -600,7 +709,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [smb2Lock lock];
     struct smb2dir *dir = smb2_opendir(smb2, [path UTF8String]);
     if (dir == NULL) {
-        NSString *err = [NSString stringWithFormat:UTF8("一覧取得失敗: %s"), smb2_get_error(smb2)];
+        NSString *err = [NSString stringWithFormat:L("一覧取得失敗: %s"), smb2_get_error(smb2)];
         [smb2Lock unlock];
         [self performSelectorOnMainThread:@selector(listFailed:) withObject:err waitUntilDone:NO];
         return;
@@ -656,7 +765,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [tableView reloadData];
     [pathLabel setStringValue:[NSString stringWithFormat:@"/%@/%@",
                                 (currentShare ? currentShare : @""), path]];
-    [statusLabel setStringValue:[NSString stringWithFormat:UTF8("%lu 件"), (unsigned long)[entries count]]];
+    [statusLabel setStringValue:[NSString stringWithFormat:L("%lu 件"), (unsigned long)[entries count]]];
 }
 
 - (void)rowDoubleClicked:(id)sender
@@ -674,7 +783,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         ? [NSString stringWithFormat:@"%@/%@", currentPath, name]
         : name;
 
-    [statusLabel setStringValue:UTF8("読み込み中...")];
+    [statusLabel setStringValue:L("読み込み中...")];
     [NSThread detachNewThreadSelector:@selector(navigateThread:) toTarget:self withObject:newPath];
 }
 
@@ -686,7 +795,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSRange r = [currentPath rangeOfString:@"/" options:NSBackwardsSearch];
     NSString *parent = (r.location == NSNotFound) ? @"" : [currentPath substringToIndex:r.location];
 
-    [statusLabel setStringValue:UTF8("読み込み中...")];
+    [statusLabel setStringValue:L("読み込み中...")];
     [NSThread detachNewThreadSelector:@selector(navigateThread:) toTarget:self withObject:parent];
 }
 
@@ -726,7 +835,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     if ([identifier isEqualToString:@"name"]) {
         return [e objectForKey:@"name"];
     } else if ([identifier isEqualToString:@"type"]) {
-        return isDir ? UTF8("フォルダ") : UTF8("ファイル");
+        return isDir ? L("フォルダ") : L("ファイル");
     } else if ([identifier isEqualToString:@"size"]) {
         return FormatSize([[e objectForKey:@"size"] unsignedLongLongValue], isDir);
     }
@@ -784,7 +893,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         if ([self downloadRemotePath:remotePath toLocalPath:localPath]) {
             [writtenNames addObject:name];
         } else {
-            [statusLabel setStringValue:[NSString stringWithFormat:UTF8("%@ のダウンロードに失敗しました"), name]];
+            [statusLabel setStringValue:[NSString stringWithFormat:L("%@ のダウンロードに失敗しました"), name]];
         }
         idx = [indexSet indexGreaterThanIndex:idx];
     }
@@ -860,7 +969,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         return NO;
     }
 
-    [statusLabel setStringValue:UTF8("アップロード中...")];
+    [statusLabel setStringValue:L("アップロード中...")];
     [NSThread detachNewThreadSelector:@selector(uploadFiles:) toTarget:self withObject:filePaths];
     return YES;
 }
@@ -898,7 +1007,7 @@ static NSString *FriendlyConnectError(NSString *raw)
 {
     int fail = [[result objectForKey:@"fail"] intValue];
     if (fail > 0) {
-        [statusLabel setStringValue:[NSString stringWithFormat:UTF8("%d件のアップロードに失敗しました"), fail]];
+        [statusLabel setStringValue:[NSString stringWithFormat:L("%d件のアップロードに失敗しました"), fail]];
     }
     [NSThread detachNewThreadSelector:@selector(navigateThread:) toTarget:self withObject:currentPath];
 }
@@ -968,11 +1077,11 @@ static NSString *FriendlyConnectError(NSString *raw)
         return;
     }
     if (![self isConnected]) {
-        [statusLabel setStringValue:UTF8("先に接続してください")];
+        [statusLabel setStringValue:L("先に接続してください")];
         return;
     }
     [mountButton setEnabled:NO];
-    [statusLabel setStringValue:UTF8("Finderに接続中...")];
+    [statusLabel setStringValue:L("Finderに接続中...")];
     [NSThread detachNewThreadSelector:@selector(doMount) toTarget:self withObject:nil];
 }
 
@@ -996,7 +1105,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         [webdavServer release];
         webdavServer = nil;
         [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
-                                withObject:UTF8("WebDAVサーバーの起動に失敗しました")
+                                withObject:L("WebDAVサーバーの起動に失敗しました")
                              waitUntilDone:NO];
         [pool release];
         return;
@@ -1023,18 +1132,18 @@ static NSString *FriendlyConnectError(NSString *raw)
         success = ([task terminationStatus] == 0);
     }
     @catch (NSException *ex) {
-        resultMessage = [NSString stringWithFormat:UTF8("マウント失敗: %@"), [ex reason]];
+        resultMessage = [NSString stringWithFormat:L("マウント失敗: %@"), [ex reason]];
         success = NO;
     }
 
     if (success) {
         mountPointPath = [mountPoint retain];
         mounted = YES;
-        resultMessage = [NSString stringWithFormat:UTF8("%@ にマウントしました"), mountPoint];
+        resultMessage = [NSString stringWithFormat:L("%@ にマウントしました"), mountPoint];
     } else if (resultMessage == nil) {
         NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
         NSString *errStr = [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease];
-        resultMessage = [NSString stringWithFormat:UTF8("マウント失敗: %@"), (errStr ? errStr : @"")];
+        resultMessage = [NSString stringWithFormat:L("マウント失敗: %@"), (errStr ? errStr : @"")];
     }
     [task release];
 
@@ -1054,13 +1163,13 @@ static NSString *FriendlyConnectError(NSString *raw)
 {
     [statusLabel setStringValue:message];
     [mountButton setEnabled:YES];
-    [mountButton setTitle:(mounted ? UTF8("取り外す") : UTF8("Finderに接続"))];
+    [mountButton setTitle:(mounted ? L("取り外す") : L("Finderに接続"))];
 }
 
 - (void)unmountAction:(id)sender
 {
     [mountButton setEnabled:NO];
-    [statusLabel setStringValue:UTF8("取り外し中...")];
+    [statusLabel setStringValue:L("取り外し中...")];
     [NSThread detachNewThreadSelector:@selector(doUnmount) toTarget:self withObject:nil];
 }
 
@@ -1094,10 +1203,10 @@ static NSString *FriendlyConnectError(NSString *raw)
         [mountPointPath release];
         mountPointPath = nil;
         mounted = NO;
-        resultMessage = UTF8("取り外しました");
+        resultMessage = L("取り外しました");
     } else {
         /* 取り外しに失敗した場合はサーバーを止めない(壊れたマウントを作らないため) */
-        resultMessage = UTF8("取り外しに失敗しました。Finderから取り出すか、再度お試しください");
+        resultMessage = L("取り外しに失敗しました。Finderから取り出すか、再度お試しください");
     }
 
     [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
@@ -1244,7 +1353,7 @@ static NSString *FriendlyConnectError(NSString *raw)
                                                     styleMask:(NSTitledWindowMask | NSClosableWindowMask)
                                                       backing:NSBackingStoreBuffered
                                                         defer:NO];
-        [shareWindow setTitle:UTF8("このMacを共有(NAS化)")];
+        [shareWindow setTitle:L("このMacを共有(NAS化)")];
         [shareWindow setReleasedWhenClosed:NO];
 
         NSView *content = [shareWindow contentView];
@@ -1255,7 +1364,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         [folderLabel setEditable:NO];
         [folderLabel setBezeled:NO];
         [folderLabel setDrawsBackground:NO];
-        [folderLabel setStringValue:UTF8("共有フォルダ一覧:")];
+        [folderLabel setStringValue:L("共有フォルダ一覧:")];
         [content addSubview:folderLabel];
         [folderLabel release];
 
@@ -1268,13 +1377,13 @@ static NSString *FriendlyConnectError(NSString *raw)
         [shareFolderTable setDelegate:self];
 
         NSTableColumn *nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
-        [[nameCol headerCell] setStringValue:UTF8("共有名")];
+        [[nameCol headerCell] setStringValue:L("共有名")];
         [nameCol setWidth:140];
         [shareFolderTable addTableColumn:nameCol];
         [nameCol release];
 
         NSTableColumn *pathCol = [[NSTableColumn alloc] initWithIdentifier:@"path"];
-        [[pathCol headerCell] setStringValue:UTF8("フォルダパス")];
+        [[pathCol headerCell] setStringValue:L("フォルダパス")];
         [pathCol setWidth:320];
         [shareFolderTable addTableColumn:pathCol];
         [pathCol release];
@@ -1306,12 +1415,12 @@ static NSString *FriendlyConnectError(NSString *raw)
         [userLabel setEditable:NO];
         [userLabel setBezeled:NO];
         [userLabel setDrawsBackground:NO];
-        [userLabel setStringValue:UTF8("ユーザー名:")];
+        [userLabel setStringValue:L("ユーザー名:")];
         [content addSubview:userLabel];
         [userLabel release];
 
         shareUserField = [[NSTextField alloc] initWithFrame:NSMakeRect(115, h - 224, 200, 22)];
-        [shareUserField setStringValue:(shareUser ? shareUser : UTF8("yamada"))];
+        [shareUserField setStringValue:(shareUser ? shareUser : L("yamada"))];
         [content addSubview:shareUserField];
         [shareUserField release];
 
@@ -1319,12 +1428,12 @@ static NSString *FriendlyConnectError(NSString *raw)
         [passLabel setEditable:NO];
         [passLabel setBezeled:NO];
         [passLabel setDrawsBackground:NO];
-        [passLabel setStringValue:UTF8("パスワード:")];
+        [passLabel setStringValue:L("パスワード:")];
         [content addSubview:passLabel];
         [passLabel release];
 
         sharePasswordField = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(115, h - 256, 200, 22)];
-        [[sharePasswordField cell] setPlaceholderString:UTF8("必須")];
+        [[sharePasswordField cell] setPlaceholderString:L("必須")];
         if (sharePassword) {
             [sharePasswordField setStringValue:sharePassword];
         }
@@ -1335,7 +1444,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         [portLabel setEditable:NO];
         [portLabel setBezeled:NO];
         [portLabel setDrawsBackground:NO];
-        [portLabel setStringValue:UTF8("ポート:")];
+        [portLabel setStringValue:L("ポート:")];
         [content addSubview:portLabel];
         [portLabel release];
 
@@ -1345,7 +1454,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         [sharePortField release];
 
         shareStartButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 328, 140, 26)];
-        [shareStartButton setTitle:(sharing ? UTF8("共有停止") : UTF8("共有開始"))];
+        [shareStartButton setTitle:(sharing ? L("共有停止") : L("共有開始"))];
         [shareStartButton setBezelStyle:NSRoundedBezelStyle];
         [shareStartButton setTarget:self];
         [shareStartButton setAction:@selector(toggleSharingAction:)];
@@ -1353,7 +1462,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         [shareStartButton release];
 
         windowsGuideButton = [[NSButton alloc] initWithFrame:NSMakeRect(160, h - 328, 170, 26)];
-        [windowsGuideButton setTitle:UTF8("Windows用接続ガイド")];
+        [windowsGuideButton setTitle:L("Windows用接続ガイド")];
         [windowsGuideButton setBezelStyle:NSRoundedBezelStyle];
         [windowsGuideButton setTarget:self];
         [windowsGuideButton setAction:@selector(showWindowsGuideAction:)];
@@ -1431,7 +1540,7 @@ static NSString *FriendlyConnectError(NSString *raw)
 {
     if (sharing) {
         [shareStartButton setEnabled:NO];
-        [shareStatusLabel setStringValue:UTF8("停止中...")];
+        [shareStatusLabel setStringValue:L("停止中...")];
         [NSThread detachNewThreadSelector:@selector(doStopSharing) toTarget:self withObject:nil];
         return;
     }
@@ -1441,11 +1550,11 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSString *portStr = [sharePortField stringValue];
 
     if ([shareFolders count] == 0) {
-        [shareStatusLabel setStringValue:UTF8("共有フォルダを1つ以上追加してください")];
+        [shareStatusLabel setStringValue:L("共有フォルダを1つ以上追加してください")];
         return;
     }
     if ([user length] == 0 || [pass length] == 0) {
-        [shareStatusLabel setStringValue:UTF8("ユーザー名とパスワードを入力してください")];
+        [shareStatusLabel setStringValue:L("ユーザー名とパスワードを入力してください")];
         return;
     }
 
@@ -1460,7 +1569,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [self saveShareSettings];
 
     [shareStartButton setEnabled:NO];
-    [shareStatusLabel setStringValue:UTF8("共有を開始しています...")];
+    [shareStatusLabel setStringValue:L("共有を開始しています...")];
 
     NSMutableDictionary *sharesDict = [NSMutableDictionary dictionary];
     NSEnumerator *e = [shareFolders objectEnumerator];
@@ -1481,59 +1590,114 @@ static NSString *FriendlyConnectError(NSString *raw)
 {
     NSString *ip = GetLocalIPAddress();
 
+    /* このガイド文書は分量が多く、文単位の対訳表(EnglishTranslations)に載せると
+       改行やスペースの一致ズレで訳が引けなくなる危険があるため、日本語版・英語版を
+       まるごと2系統に分けて書く方式にしている */
     NSMutableString *text = [NSMutableString string];
-    [text appendString:UTF8(
-        "Windows11のパソコンから、この共有(NAS化)フォルダに接続する手順です。\n"
-        "上から順番に、Windows側で操作してください。\n\n"
-        "※注意※\n"
-        "エクスプローラーに自動でドライブが出てくることはありません。\n"
-        "また、エクスプローラー左側の「ネットワーク」を開くとこのMacの名前が\n"
-        "見えることがありますが、それをダブルクリックしてもエラーになります\n"
-        "(そちらはこの手順とは別の古い方式で見えているだけです)。\n"
-        "必ず下記の【1】〜【3】の手順で接続してください。\n\n"
-        "【1】このプロジェクトの配布ページから接続用ファイルをダウンロードし、\n"
-        "展開(解凍)してください。\n\n"
-        "【2】展開してできたフォルダの中の connect-aqualink.bat を\n"
-        "ダブルクリックして起動してください。\n\n"
-        "【3】以下の項目を、聞かれた順番にそのまま入力してください:\n\n")];
+    BOOL en = UseEnglish();
 
-    [text appendFormat:UTF8("　①サーバーのIPアドレス:\n　　%@\n"), (ip ? ip : UTF8("(取得できません。共有を開始してから再度お試しください)"))];
-    [text appendString:UTF8("　　(この数字はMacのネットワーク環境によって変わります。表示が違う場合は\n"
-                             "　　Macの「システム環境設定 > ネットワーク」で現在のIPアドレスをご確認ください)\n\n")];
+    if (!en) {
+        [text appendString:UTF8(
+            "Windows11のパソコンから、この共有(NAS化)フォルダに接続する手順です。\n"
+            "上から順番に、Windows側で操作してください。\n\n"
+            "※注意※\n"
+            "エクスプローラーに自動でドライブが出てくることはありません。\n"
+            "また、エクスプローラー左側の「ネットワーク」を開くとこのMacの名前が\n"
+            "見えることがありますが、それをダブルクリックしてもエラーになります\n"
+            "(そちらはこの手順とは別の古い方式で見えているだけです)。\n"
+            "必ず下記の【1】〜【3】の手順で接続してください。\n\n"
+            "【1】このプロジェクトの配布ページから接続用ファイルをダウンロードし、\n"
+            "展開(解凍)してください。\n\n"
+            "【2】展開してできたフォルダの中の connect-aqualink.bat を\n"
+            "ダブルクリックして起動してください。\n\n"
+            "【3】以下の項目を、聞かれた順番にそのまま入力してください:\n\n")];
 
-    [text appendString:UTF8(
-        "　②このサーバーの名前(自由に決めて構いませんが、\n"
-        "　　ご自身の名前やWindows PCの名前と同じにしないでください。\n"
-        "　　名前が衝突していると繋がらないことがあります):\n"
-        "　　例) aqualink-mac\n\n")];
+        [text appendFormat:UTF8("　①サーバーのIPアドレス:\n　　%@\n"), (ip ? ip : UTF8("(取得できません。共有を開始してから再度お試しください)"))];
+        [text appendString:UTF8("　　(この数字はMacのネットワーク環境によって変わります。表示が違う場合は\n"
+                                 "　　Macの「システム環境設定 > ネットワーク」で現在のIPアドレスをご確認ください)\n\n")];
 
-    if ([shareFolders count] == 0) {
-        [text appendString:UTF8("　③共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
-    } else {
-        [text appendString:UTF8("　③共有名(共有フォルダが複数ある場合、繋ぎたいものを1つ選んで入力してください):\n")];
-        NSEnumerator *e = [shareFolders objectEnumerator];
-        NSDictionary *f;
-        while ((f = [e nextObject])) {
-            /* Finderで選んだフォルダ名はHFS+のNFD(濁点等が分離した形)のままのことがあり、
-               このテキストビューではNFDの結合文字が正しく描画されないことがあるため、
-               表示直前にNFC(結合済み)へ正規化する */
-            NSString *displayName = [[f objectForKey:@"name"] precomposedStringWithCanonicalMapping];
-            [text appendFormat:UTF8("　　・%@\n"), displayName];
+        [text appendString:UTF8(
+            "　②このサーバーの名前(自由に決めて構いませんが、\n"
+            "　　ご自身の名前やWindows PCの名前と同じにしないでください。\n"
+            "　　名前が衝突していると繋がらないことがあります):\n"
+            "　　例) aqualink-mac\n\n")];
+
+        if ([shareFolders count] == 0) {
+            [text appendString:UTF8("　③共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
+        } else {
+            [text appendString:UTF8("　③共有名(共有フォルダが複数ある場合、繋ぎたいものを1つ選んで入力してください):\n")];
+            NSEnumerator *e = [shareFolders objectEnumerator];
+            NSDictionary *f;
+            while ((f = [e nextObject])) {
+                NSString *displayName = [[f objectForKey:@"name"] precomposedStringWithCanonicalMapping];
+                [text appendFormat:UTF8("　　・%@\n"), displayName];
+            }
+            [text appendString:@"\n"];
         }
-        [text appendString:@"\n"];
+
+        [text appendString:UTF8("　④ユーザー名:\n　　この画面の「共有設定」で決めたユーザー名を入力してください(例: yamada)。\n\n")];
+        [text appendString:UTF8(
+            "　⑤パスワード:\n"
+            "　　共有設定で決めたパスワードを入力してください(画面には表示されません)。\n"
+            "　　パソコンのログインパスワードをそのまま使っている方も多いです。\n\n")];
+
+        [text appendString:UTF8(
+            "【4】「Connected!」と表示されれば成功です。エクスプローラーの「PC」に\n"
+            "ドライブとして表示されます。\n\n"
+            "うまくいかない場合は、まず①のIPアドレスが変わっていないか確認してください\n"
+            "(iBook/Macを再起動するとIPアドレスが変わることがあります)。")];
+    } else {
+        [text appendString:UTF8(
+            "Steps to connect to this shared (NAS) folder from a Windows 11 PC.\n"
+            "Follow them in order on the Windows side.\n\n"
+            "NOTE:\n"
+            "A drive will NOT appear automatically in File Explorer.\n"
+            "You may also see this Mac's name under \"Network\" in File Explorer's\n"
+            "sidebar, but double-clicking it will fail\n"
+            "(that's a different, older method unrelated to these steps).\n"
+            "Please connect using steps [1]-[3] below.\n\n"
+            "[1] Download the connection files from this project's release page\n"
+            "and extract (unzip) them.\n\n"
+            "[2] Double-click connect-aqualink.bat inside the extracted folder\n"
+            "to run it.\n\n"
+            "[3] Enter the following items exactly as asked, in order:\n\n")];
+
+        [text appendFormat:UTF8("  1) Server IP address:\n   %@\n"), (ip ? ip : UTF8("(Could not detect it. Start sharing first, then try again.)"))];
+        [text appendString:UTF8("   (This number can change depending on the Mac's network. If it looks\n"
+                                 "   different, check the current IP address under \"System Preferences >\n"
+                                 "   Network\" on the Mac.)\n\n")];
+
+        [text appendString:UTF8(
+            "  2) A name for this server (you can choose anything, but don't\n"
+            "   make it the same as your own name or your Windows PC's name --\n"
+            "   a name collision can prevent connecting):\n"
+            "   e.g. aqualink-mac\n\n")];
+
+        if ([shareFolders count] == 0) {
+            [text appendString:UTF8("  3) Share name:\n   (No shared folders have been added yet. Add one with the \"+\" above.)\n\n")];
+        } else {
+            [text appendString:UTF8("  3) Share name (if there are multiple shared folders, enter the one you want to connect to):\n")];
+            NSEnumerator *e = [shareFolders objectEnumerator];
+            NSDictionary *f;
+            while ((f = [e nextObject])) {
+                NSString *displayName = [[f objectForKey:@"name"] precomposedStringWithCanonicalMapping];
+                [text appendFormat:UTF8("   - %@\n"), displayName];
+            }
+            [text appendString:@"\n"];
+        }
+
+        [text appendString:UTF8("  4) Username:\n   Enter the username you set on the \"Share Settings\" screen (e.g. yamada).\n\n")];
+        [text appendString:UTF8(
+            "  5) Password:\n"
+            "   Enter the password you set on the Share Settings screen (it won't\n"
+            "   be shown on screen). Many people just use their PC login password.\n\n")];
+
+        [text appendString:UTF8(
+            "[4] If you see \"Connected!\", it worked. The drive will appear under\n"
+            "\"This PC\" in File Explorer.\n\n"
+            "If it doesn't work, first check whether the IP address in step 1 has\n"
+            "changed (restarting the iBook/Mac can change its IP address).")];
     }
-
-    [text appendString:UTF8("　④ユーザー名:\n　　この画面の「共有設定」で決めたユーザー名を入力してください(例: yamada)。\n\n")];
-    [text appendString:UTF8(
-        "　⑤パスワード:\n"
-        "　　共有設定で決めたパスワードを入力してください(画面には表示されません)。\n"
-        "　　パソコンのログインパスワードをそのまま使っている方も多いです。\n\n")];
-
-    [text appendString:UTF8(
-        "【4】「Connected!」と表示されれば成功です。エクスプローラーの「PC」に\n"
-        "ドライブとして表示されます。\n\n"
-        "うまくいかない場合は、まず①のIPアドレスが変わっていないか確認してください\n"
-        "(iBook/Macを再起動するとIPアドレスが変わることがあります)。")];
 
     if (windowsGuideWindow == nil) {
         NSRect frame = NSMakeRect(180, 100, 480, 480);
@@ -1542,7 +1706,7 @@ static NSString *FriendlyConnectError(NSString *raw)
                                                                       NSResizableWindowMask)
                                                              backing:NSBackingStoreBuffered
                                                                defer:NO];
-        [windowsGuideWindow setTitle:UTF8("Windows用接続ガイド")];
+        [windowsGuideWindow setTitle:L("Windows用接続ガイド")];
         [windowsGuideWindow setReleasedWhenClosed:NO];
 
         NSScrollView *guideScroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 480, 480)];
@@ -1598,11 +1762,11 @@ static NSString *FriendlyConnectError(NSString *raw)
         localWebDAVServer = server;
         NSString *ip = GetLocalIPAddress();
         message = [NSString stringWithFormat:
-                   UTF8("共有中です(%d フォルダ)。他の機器から下記へ接続してください:\nhttp://%@:%d/ (ユーザー名/パスワードが必要)"),
+                   L("共有中です(%d フォルダ)。他の機器から下記へ接続してください:\nhttp://%@:%d/ (ユーザー名/パスワードが必要)"),
                    (int)[sharesDict count], ip, p];
     } else {
         [server release];
-        message = UTF8("共有の開始に失敗しました(ポートを確保できません)");
+        message = L("共有の開始に失敗しました(ポートを確保できません)");
     }
 
     [self performSelectorOnMainThread:@selector(sharingStartedWithMessage:)
@@ -1617,7 +1781,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     sharing = (localWebDAVServer != nil);
     [shareStatusLabel setStringValue:message];
     [shareStartButton setEnabled:YES];
-    [shareStartButton setTitle:(sharing ? UTF8("共有停止") : UTF8("共有開始"))];
+    [shareStartButton setTitle:(sharing ? L("共有停止") : L("共有開始"))];
 }
 
 - (void)doStopSharing
@@ -1629,7 +1793,7 @@ static NSString *FriendlyConnectError(NSString *raw)
         localWebDAVServer = nil;
     }
     [self performSelectorOnMainThread:@selector(sharingStoppedWithMessage:)
-                            withObject:UTF8("共有を停止しました")
+                            withObject:L("共有を停止しました")
                          waitUntilDone:NO];
     [pool release];
 }
@@ -1639,7 +1803,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     sharing = NO;
     [shareStatusLabel setStringValue:message];
     [shareStartButton setEnabled:YES];
-    [shareStartButton setTitle:UTF8("共有開始")];
+    [shareStartButton setTitle:L("共有開始")];
 }
 
 /* ============ 共有設定の永続化 ============ */
@@ -1684,7 +1848,7 @@ static NSString *FriendlyConnectError(NSString *raw)
 
     NSString *savedUser = [defaults stringForKey:@"AquaLinkShareUser"];
     [shareUser release];
-    shareUser = [(savedUser ? savedUser : UTF8("yamada")) retain];
+    shareUser = [(savedUser ? savedUser : L("yamada")) retain];
 
     int savedPort = [defaults integerForKey:@"AquaLinkSharePort"];
     sharePortValue = (savedPort > 0) ? savedPort : 8091;
