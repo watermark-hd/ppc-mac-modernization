@@ -125,21 +125,24 @@ static NSString *LoadKeychainPassword(void)
     [self loadShareSettings];
 
     /* --- メニューバー(共有設定・Quit) ---
-       [既知の不具合・原因不明] このTiger環境ではプルダウンメニューを開いても
-       中身が表示されない/意図しない場所に浮遊表示される問題がある。メニュー構造
-       そのものは正しいことをダンプで確認済み(重複なし)。target設定・release
-       タイミング・setMainMenu:の順序など複数の仮説を試したが解消しなかったため、
-       WindowServer側の描画バグの可能性が高いと判断し、メニュー自体の修正は断念した。
-       実用上は下記のメインウィンドウ内の「このMacを共有(NAS化)...」ボタンから
-       同じ画面を開けるので、共有設定はそちらを使うこと。 */
+       [修正済みの不具合・その1] クリックするとタイトルは青くハイライトするのに
+       中身が出ず、タイトルの右の空白にカーソルを移動すると出る、という症状が
+       あった。原因は appMenuItem(見出し側)には "AquaLink" というタイトルを
+       設定していた一方、そのプルダウンの中身である appMenu(NSMenuオブジェクト
+       自体)にはタイトルを一切設定していなかったこと。appMenuにも同じタイトルを
+       設定して解消した。
+       [修正済みの不具合・その2] その1を直した後、"AquaLink" が2つ並んで表示され、
+       左側はハイライトのみで反応せず、右側(こちらが本物)だけメニューが開く症状が
+       出た。原因は [NSApp setAppleMenu:] を呼んでいなかったこと。nibを使わず
+       手組みでメニューバーを作る場合、これを呼ばないとAppKit側が「アプリケー
+       ションメニューが設定されていない」と判断し、プロセス名から中身の無い
+       メニュー項目をもう一つ自動生成してしまう。下記で明示的に指定して解消した。 */
     NSMenu *menubar = [NSApp mainMenu];
     NSMenuItem *appMenuItem;
-    BOOL needsInstall = NO;
     if (menubar == nil) {
         menubar = [[NSMenu alloc] init];
         appMenuItem = [[NSMenuItem alloc] init];
         [menubar addItem:appMenuItem];
-        needsInstall = YES;
     } else if ([menubar numberOfItems] > 0) {
         appMenuItem = (NSMenuItem *)[menubar itemAtIndex:0];
     } else {
@@ -153,6 +156,8 @@ static NSString *LoadKeychainPassword(void)
         appMenu = [[NSMenu alloc] init];
         [appMenuItem setSubmenu:appMenu];
     }
+    [appMenu setTitle:[appMenuItem title]];
+    [NSApp setAppleMenu:appMenu];
 
     NSMenuItem *shareMenuItem = [[NSMenuItem alloc] initWithTitle:UTF8("共有設定...")
                                                              action:@selector(showShareWindow:)
@@ -168,10 +173,9 @@ static NSString *LoadKeychainPassword(void)
     [quitItem release];
     /* menubar / appMenuItem / appMenu はここでreleaseしない(意図的) */
 
-    /* タイトル・中身が全て確定してから最後にインストールする */
-    if (needsInstall) {
-        [NSApp setMainMenu:menubar];
-    }
+    /* タイトル・中身が全て確定してから最後にインストールする。
+       menubarが既存のものを流用したケースでも、念のため毎回呼び直して反映を確実にする */
+    [NSApp setMainMenu:menubar];
 
     /* --- ウィンドウ --- */
     /* 接続欄の上にラベル行を追加したため、旧レイアウト(高さ450)より22px高くする。
