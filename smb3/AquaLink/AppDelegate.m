@@ -164,6 +164,9 @@ static NSString *FriendlyConnectError(NSString *raw)
     if ([lower rangeOfString:@"timeout expired"].location != NSNotFound) {
         return [NSString stringWithFormat:UTF8("接続失敗: タイムアウトしました。ネットワーク接続を確認してください。\n(詳細: %@)"), raw];
     }
+    if ([lower rangeOfString:@"pollhup"].location != NSNotFound) {
+        return [NSString stringWithFormat:UTF8("接続失敗: 通信の途中でサーバー側から切断されました。この機器がSMB2/3に対応していない可能性があります(古いルーター内蔵の共有機能など)。\n(詳細: %@)"), raw];
+    }
     return [NSString stringWithFormat:UTF8("接続失敗: %@"), raw];
 }
 
