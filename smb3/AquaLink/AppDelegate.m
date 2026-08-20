@@ -69,38 +69,46 @@ static NSString *GetLocalIPAddress(void)
     return address ? address : @"(IP不明)";
 }
 
-/* --- キーチェーン: 共有機能のパスワードを平文でNSUserDefaultsに置かないための保存先 --- */
-#define KEYCHAIN_SERVICE "AquaLink-Share"
-#define KEYCHAIN_ACCOUNT "shared-password"
+/* --- キーチェーン: パスワードを平文でNSUserDefaultsに置かないための保存先 ---
+   service/accountを引数化し、「このMacを共有する」機能のパスワードと、
+   「NASに繋ぐ」接続フォームのパスワード(接続ごとに別アカウント名を使う)の
+   両方をこの2関数で扱う */
+#define KEYCHAIN_SERVICE_SHARE @"AquaLink-Share"
+#define KEYCHAIN_ACCOUNT_SHARE @"shared-password"
+#define KEYCHAIN_SERVICE_CONNECT @"AquaLink-Connect"
 
-static void SaveKeychainPassword(NSString *password)
+static void SaveKeychainPassword(NSString *service, NSString *account, NSString *password)
 {
+    const char *svc = [service UTF8String];
+    const char *acct = [account UTF8String];
     const char *pass = [password UTF8String];
     UInt32 passLen = pass ? (UInt32)strlen(pass) : 0;
 
     SecKeychainItemRef item = NULL;
     OSStatus status = SecKeychainFindGenericPassword(NULL,
-                                                       (UInt32)strlen(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE,
-                                                       (UInt32)strlen(KEYCHAIN_ACCOUNT), KEYCHAIN_ACCOUNT,
+                                                       (UInt32)strlen(svc), svc,
+                                                       (UInt32)strlen(acct), acct,
                                                        NULL, NULL, &item);
     if (status == noErr && item != NULL) {
         SecKeychainItemModifyContent(item, NULL, passLen, pass);
         CFRelease(item);
     } else {
         SecKeychainAddGenericPassword(NULL,
-                                       (UInt32)strlen(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE,
-                                       (UInt32)strlen(KEYCHAIN_ACCOUNT), KEYCHAIN_ACCOUNT,
+                                       (UInt32)strlen(svc), svc,
+                                       (UInt32)strlen(acct), acct,
                                        passLen, pass, NULL);
     }
 }
 
-static NSString *LoadKeychainPassword(void)
+static NSString *LoadKeychainPassword(NSString *service, NSString *account)
 {
+    const char *svc = [service UTF8String];
+    const char *acct = [account UTF8String];
     UInt32 passLen = 0;
     void *passData = NULL;
     OSStatus status = SecKeychainFindGenericPassword(NULL,
-                                                       (UInt32)strlen(KEYCHAIN_SERVICE), KEYCHAIN_SERVICE,
-                                                       (UInt32)strlen(KEYCHAIN_ACCOUNT), KEYCHAIN_ACCOUNT,
+                                                       (UInt32)strlen(svc), svc,
+                                                       (UInt32)strlen(acct), acct,
                                                        &passLen, &passData, NULL);
     if (status != noErr || passData == NULL) {
         return nil;
@@ -110,6 +118,53 @@ static NSString *LoadKeychainPassword(void)
                                                  encoding:NSUTF8StringEncoding] autorelease];
     SecKeychainItemFreeContent(NULL, passData);
     return result;
+}
+
+/* 接続フォームのKeychainアカウント名。ユーザー名/アドレス/共有名の組み合わせごとに
+   別のパスワードを覚えられるようにする(複数のNAS/共有を行き来しても混ざらない) */
+static NSString *ConnectKeychainAccount(NSString *username, NSString *address, NSString *share)
+{
+    return [NSString stringWithFormat:@"%@@%@/%@",
+            (username ? username : @""),
+            (address ? address : @""),
+            (share ? share : @"")];
+}
+
+/* smb2_get_error()が返す生のエラー文字列(libsmb2ソース確認済み: 例
+   "Session setup failed with (0x...) STATUS_LOGON_FAILURE"、
+   "Tree Connect failed with (0x...) STATUS_BAD_NETWORK_NAME. ..."、
+   "Invalid address:... Can not resolve into IPv4/v6."、
+   "Connect failed with errno : Connection refused(61)" など)を、
+   よくあるパターンだけ日本語の分かりやすい文言に置き換える。
+   マッチしないものはそのまま(生の文字列)を表示するので、情報が失われることはない */
+static NSString *FriendlyConnectError(NSString *raw)
+{
+    if (raw == nil) {
+        raw = @"";
+    }
+    NSString *lower = [raw lowercaseString];
+
+    if ([lower rangeOfString:@"logon_failure"].location != NSNotFound) {
+        return [NSString stringWithFormat:UTF8("接続失敗: ユーザー名またはパスワードが正しくないようです。\n(詳細: %@)"), raw];
+    }
+    if ([lower rangeOfString:@"bad_network_name"].location != NSNotFound) {
+        return [NSString stringWithFormat:UTF8("接続失敗: 指定した共有名が見つかりません。共有名のつづりを確認してください。\n(詳細: %@)"), raw];
+    }
+    if ([lower rangeOfString:@"access_denied"].location != NSNotFound) {
+        return [NSString stringWithFormat:UTF8("接続失敗: アクセスが拒否されました。ユーザー名・パスワード・共有の権限を確認してください。\n(詳細: %@)"), raw];
+    }
+    if ([lower rangeOfString:@"can not resolve"].location != NSNotFound ||
+        [lower rangeOfString:@"invalid address"].location != NSNotFound) {
+        return [NSString stringWithFormat:UTF8("接続失敗: サーバーのアドレスが見つかりません。アドレスのつづりを確認してください。\n(詳細: %@)"), raw];
+    }
+    if ([lower rangeOfString:@"connect failed with errno"].location != NSNotFound ||
+        [lower rangeOfString:@"socket connect failed"].location != NSNotFound) {
+        return [NSString stringWithFormat:UTF8("接続失敗: サーバーに接続できません。電源やネットワーク接続、アドレスを確認してください。\n(詳細: %@)"), raw];
+    }
+    if ([lower rangeOfString:@"timeout expired"].location != NSNotFound) {
+        return [NSString stringWithFormat:UTF8("接続失敗: タイムアウトしました。ネットワーク接続を確認してください。\n(詳細: %@)"), raw];
+    }
+    return [NSString stringWithFormat:UTF8("接続失敗: %@"), raw];
 }
 
 @implementation AppDelegate
@@ -254,6 +309,7 @@ static NSString *LoadKeychainPassword(void)
     [urlField setStringValue:@""];
     [urlField setUsesDataSource:YES];
     [urlField setDataSource:self];
+    [urlField setDelegate:self];
     [urlField setCompletes:NO];
     [urlField setAutoresizingMask:(NSViewMinYMargin)];
     [content addSubview:urlField];
@@ -271,6 +327,12 @@ static NSString *LoadKeychainPassword(void)
     [passwordField setAutoresizingMask:(NSViewMinXMargin | NSViewMinYMargin)];
     [content addSubview:passwordField];
     [passwordField release];
+
+    /* 起動時、直近の接続履歴があればアドレス・共有名・ユーザー名・パスワードを
+       まとめて自動入力する(savedUser/savedShareの単純な記憶より新しく正確) */
+    if ([bookmarks count] > 0) {
+        [self autofillFromBookmarkAtIndex:0];
+    }
 
     connectButton = [[NSButton alloc] initWithFrame:NSMakeRect(530, h - 42, 100, 26)];
     [connectButton setTitle:UTF8("接続")];
@@ -475,7 +537,7 @@ static NSString *LoadKeychainPassword(void)
 
     int rc = smb2_connect_share(ctx, url->server, url->share, url->user);
     if (rc != 0) {
-        NSString *err = [NSString stringWithFormat:UTF8("接続失敗: %s"), smb2_get_error(ctx)];
+        NSString *err = FriendlyConnectError(UTF8(smb2_get_error(ctx)));
         smb2_destroy_url(url);
         smb2_destroy_context(ctx);
         [self performSelectorOnMainThread:@selector(connectFailed:) withObject:err waitUntilDone:NO];
@@ -504,7 +566,19 @@ static NSString *LoadKeychainPassword(void)
 {
     [statusLabel setStringValue:UTF8("接続しました")];
     [connectButton setEnabled:YES];
-    [self addBookmark:[urlField stringValue]];
+
+    NSString *address = [urlField stringValue];
+    NSString *share = [shareField stringValue];
+    NSString *username = [usernameField stringValue];
+    NSString *password = [passwordField stringValue];
+
+    [self addBookmarkWithAddress:address share:share username:username];
+
+    /* 接続に成功したパスワードだけをKeychainに保存する(誤入力を覚えないため) */
+    if ([password length] > 0) {
+        NSString *account = ConnectKeychainAccount(username, address, share);
+        SaveKeychainPassword(KEYCHAIN_SERVICE_CONNECT, account, password);
+    }
 }
 
 - (void)connectFailed:(NSString *)message
@@ -1061,16 +1135,42 @@ static NSString *LoadKeychainPassword(void)
 {
     NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:@"AquaLinkBookmarks"];
     [bookmarks release];
-    bookmarks = saved ? [saved mutableCopy] : [[NSMutableArray alloc] init];
+    bookmarks = [[NSMutableArray alloc] init];
+    NSEnumerator *e = [saved objectEnumerator];
+    id item;
+    while ((item = [e nextObject])) {
+        if ([item isKindOfClass:[NSDictionary class]]) {
+            /* 現行形式: {address, share, username} */
+            [bookmarks addObject:[[item mutableCopy] autorelease]];
+        } else if ([item isKindOfClass:[NSString class]]) {
+            /* 旧形式(アドレスの文字列のみ)からの移行: アドレスだけ引き継ぐ */
+            NSMutableDictionary *dict = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                          item, @"address", @"", @"share", @"", @"username", nil];
+            [bookmarks addObject:dict];
+        }
+    }
 }
 
-- (void)addBookmark:(NSString *)urlString
+- (void)addBookmarkWithAddress:(NSString *)address share:(NSString *)share username:(NSString *)username
 {
-    if ([urlString length] == 0) {
+    if ([address length] == 0) {
         return;
     }
-    [bookmarks removeObject:urlString];
-    [bookmarks insertObject:urlString atIndex:0];
+    NSEnumerator *e = [bookmarks objectEnumerator];
+    NSMutableDictionary *existing;
+    NSMutableArray *toRemove = [NSMutableArray array];
+    while ((existing = [e nextObject])) {
+        if ([[existing objectForKey:@"address"] isEqualToString:address]) {
+            [toRemove addObject:existing];
+        }
+    }
+    [bookmarks removeObjectsInArray:toRemove];
+
+    NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+                                   address, @"address",
+                                   (share ? share : @""), @"share",
+                                   (username ? username : @""), @"username", nil];
+    [bookmarks insertObject:entry atIndex:0];
     while ([bookmarks count] > 10) {
         [bookmarks removeLastObject];
     }
@@ -1079,7 +1179,34 @@ static NSString *LoadKeychainPassword(void)
     [urlField reloadData];
 }
 
-/* ============ NSComboBox データソース ============ */
+/* 履歴の1件を選んだ(または起動直後に最新の1件を)フォームへ反映する。
+   パスワードはKeychainから読み出す(NSUserDefaultsには平文で置かない) */
+- (void)autofillFromBookmarkAtIndex:(unsigned int)index
+{
+    if (index >= [bookmarks count]) {
+        return;
+    }
+    NSDictionary *entry = [bookmarks objectAtIndex:index];
+    NSString *address = [entry objectForKey:@"address"];
+    NSString *share = [entry objectForKey:@"share"];
+    NSString *username = [entry objectForKey:@"username"];
+
+    if ([address length] > 0) {
+        [urlField setStringValue:address];
+    }
+    if ([share length] > 0) {
+        [shareField setStringValue:share];
+    }
+    if ([username length] > 0) {
+        [usernameField setStringValue:username];
+    }
+
+    NSString *account = ConnectKeychainAccount(username, address, share);
+    NSString *password = LoadKeychainPassword(KEYCHAIN_SERVICE_CONNECT, account);
+    [passwordField setStringValue:(password ? password : @"")];
+}
+
+/* ============ NSComboBox データソース/デリゲート ============ */
 
 - (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox
 {
@@ -1091,7 +1218,17 @@ static NSString *LoadKeychainPassword(void)
     if (index < 0 || index >= (int)[bookmarks count]) {
         return @"";
     }
-    return [bookmarks objectAtIndex:index];
+    return [[bookmarks objectAtIndex:index] objectForKey:@"address"];
+}
+
+/* 履歴のプルダウンから選ぶと、アドレスだけでなく共有名・ユーザー名・パスワードも
+   まとめて埋める */
+- (void)comboBoxSelectionDidChange:(NSNotification *)notification
+{
+    int index = [urlField indexOfSelectedItem];
+    if (index >= 0) {
+        [self autofillFromBookmarkAtIndex:(unsigned int)index];
+    }
 }
 
 /* ============ このMacを共有する(NAS化)機能 ============ */
@@ -1524,7 +1661,7 @@ static NSString *LoadKeychainPassword(void)
     [defaults synchronize];
 
     if ([sharePassword length] > 0) {
-        SaveKeychainPassword(sharePassword);
+        SaveKeychainPassword(KEYCHAIN_SERVICE_SHARE, KEYCHAIN_ACCOUNT_SHARE, sharePassword);
     }
 }
 
@@ -1550,7 +1687,7 @@ static NSString *LoadKeychainPassword(void)
     sharePortValue = (savedPort > 0) ? savedPort : 8091;
 
     [sharePassword release];
-    sharePassword = [LoadKeychainPassword() retain];
+    sharePassword = [LoadKeychainPassword(KEYCHAIN_SERVICE_SHARE, KEYCHAIN_ACCOUNT_SHARE) retain];
 }
 
 /* アプリ起動時、前回の共有設定が保存されていれば自動的に共有を再開する */

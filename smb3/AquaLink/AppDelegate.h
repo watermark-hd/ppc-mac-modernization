@@ -64,7 +64,8 @@
 - (void)upAction:(id)sender;
 - (void)mountAction:(id)sender;
 - (void)loadBookmarks;
-- (void)addBookmark:(NSString *)urlString;
+- (void)addBookmarkWithAddress:(NSString *)address share:(NSString *)share username:(NSString *)username;
+- (void)autofillFromBookmarkAtIndex:(unsigned int)index;
 
 /* NSComboBox データソース(履歴の一覧表示に使用) */
 - (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox;
