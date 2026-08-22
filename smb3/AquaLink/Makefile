@@ -3,13 +3,17 @@ APPBUNDLE = $(APPNAME).app
 CONTENTS = $(APPBUNDLE)/Contents
 MACOS = $(CONTENTS)/MacOS
 
-LIBSMB2_DIR = $(HOME)/developer/libsmb2
-LIBSMB2_INC = $(LIBSMB2_DIR)/include
-LIBSMB2_A = $(LIBSMB2_DIR)/lib/.libs/libsmb2.a
+# ?= と += にしているのは、MacPorts (PPCPorts) 経由のビルドから
+# `make LIBSMB2_DIR=... LIBSMB2_A=...` のように上書きできるようにするため。
+# 単体で `make` した場合は、これまで通りの手元ビルド(iBook上で ./configure
+# --disable-shared した libsmb2 の静的ライブラリ)を指す。
+LIBSMB2_DIR ?= $(HOME)/developer/libsmb2
+LIBSMB2_INC ?= $(LIBSMB2_DIR)/include
+LIBSMB2_A ?= $(LIBSMB2_DIR)/lib/.libs/libsmb2.a
 
-CC = gcc
-CFLAGS = -std=gnu99 -Wall -fobjc-exceptions -I$(LIBSMB2_INC)
-LDFLAGS = -framework Cocoa -framework Security
+CC ?= gcc
+CFLAGS += -std=gnu99 -Wall -fobjc-exceptions -I$(LIBSMB2_INC)
+LDFLAGS += -framework Cocoa -framework Security
 
 OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o
 
