@@ -1189,6 +1189,13 @@ static NSString *FriendlyConnectError(NSString *raw)
         if (!unmountOK) {
             unmountOK = [self runUnmountCommand:mountPointPath force:YES];
         }
+        if (!unmountOK) {
+            /* 一部の環境(パッチ当てOSイメージ等)では、mount_webdavがsetuid rootで
+               マウントした結果、そのマウントがroot所有として扱われ、一般ユーザー権限の
+               umountが "Operation not permitted" で拒否されることがある(実機で確認済み)。
+               最終手段として、管理者パスワードのダイアログを出してumountする。 */
+            unmountOK = [self runPrivilegedUnmount:mountPointPath];
+        }
     } else {
         unmountOK = YES;
     }
@@ -1239,6 +1246,43 @@ static NSString *FriendlyConnectError(NSString *raw)
     }
     [task release];
     return ok;
+}
+
+/* NSString の -stringByReplacingOccurrencesOfString:withString: はLeopard(10.5)以降のAPIで
+   Tigerには存在しないため、代わりにTiger以前から存在する
+   NSMutableString -replaceOccurrencesOfString:withString:options:range: を使う */
+static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *replacement)
+{
+    NSMutableString *result = [NSMutableString stringWithString:source];
+    [result replaceOccurrencesOfString:target
+                             withString:replacement
+                                options:0
+                                  range:NSMakeRange(0, [result length])];
+    return result;
+}
+
+/* バックグラウンドスレッドから呼ばれる。管理者パスワードのダイアログを出してumountする。
+   通常のumount(force含む)が権限不足で失敗した場合の最終手段。 */
+- (BOOL)runPrivilegedUnmount:(NSString *)mountPoint
+{
+    /* シェルのシングルクォート内でmountPoint自体にシングルクォートが含まれていても
+       安全になるようエスケープする: ' -> '\'' */
+    NSString *shellQuoted = AQReplaceAll(mountPoint, @"'", @"'\\''");
+    NSString *shellCommand = [NSString stringWithFormat:@"umount '%@' || umount -f '%@'", shellQuoted, shellQuoted];
+
+    /* 上のシェルコマンド文字列を、AppleScriptの文字列リテラルとして埋め込めるようエスケープする */
+    NSString *scriptQuoted = AQReplaceAll(shellCommand, @"\\", @"\\\\");
+    scriptQuoted = AQReplaceAll(scriptQuoted, @"\"", @"\\\"");
+
+    NSString *scriptSource = [NSString stringWithFormat:
+        @"do shell script \"%@\" with administrator privileges", scriptQuoted];
+
+    NSAppleScript *appleScript = [[NSAppleScript alloc] initWithSource:scriptSource];
+    NSDictionary *errorInfo = nil;
+    [appleScript executeAndReturnError:&errorInfo];
+    [appleScript release];
+
+    return (errorInfo == nil);
 }
 
 /* ============ ブックマーク(接続履歴) ============ */

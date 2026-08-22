@@ -136,6 +136,16 @@ iBook 実機で確認済み:
 - **デスクトップにアイコンが出ない**: マウント自体は成功していても、Finder環境設定の
   「一般」→「デスクトップに表示する項目」→「接続中のサーバ」がオフだと見た目に現れない。
   `/Volumes` を直接開けば確認できる。今回はこの設定が過去にコマンドでオフにされていたのが原因だった。
+- **[MacRumorsで報告された不具合] 一部環境で `umount` が権限不足で失敗する**:
+  非公式パッチ当ての10.6.8(Snow Leopard) PPCイメージ利用者から、「取り外す」が常に
+  失敗するという報告(2026-08-22)。実機で `umount` (sudo無し)を手動実行してもらったところ
+  `Operation not permitted` で失敗し、`sudo umount` なら成功することを確認。原因は
+  `mount_webdav` がsetuid rootで動作するため、マウント自体がroot所有として扱われ、
+  一般ユーザー権限では取り外せなくなっていたこと(この環境は別途 `mount_webdav` 自身の
+  setuidビットが失われる不具合も抱えていた個体だった。両者は別の症状)。
+  対策として、通常の`umount`→`umount -f`が両方失敗した場合の最終手段として、
+  `NSAppleScript`の`do shell script ... with administrator privileges`で管理者パスワードの
+  ダイアログを出してumountするフォールバックを追加(`runPrivilegedUnmount:`)。
 
 ## iBookをNAS化する(逆方向: 現代機 → iBook) ✅ 完了
 
