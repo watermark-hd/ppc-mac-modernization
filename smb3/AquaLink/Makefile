@@ -3,13 +3,18 @@ APPBUNDLE = $(APPNAME).app
 CONTENTS = $(APPBUNDLE)/Contents
 MACOS = $(CONTENTS)/MacOS
 
-# ?= と += にしているのは、MacPorts (PPCPorts) 経由のビルドから
-# `make LIBSMB2_DIR=... LIBSMB2_A=...` のように上書きできるようにするため。
-# 単体で `make` した場合は、これまで通りの手元ビルド(iBook上で ./configure
-# --disable-shared した libsmb2 の静的ライブラリ)を指す。
+# LIBSMB2_DIR ひとつだけ指定すれば済むように、よくあるレイアウトを順に探して
+# 最初に見つかったものを使う。手元ビルド(iBook上で ./configure --disable-shared
+# した際の $(LIBSMB2_DIR)/lib/.libs/libsmb2.a)と、MacPorts等でインストール済みの
+# prefix($(LIBSMB2_DIR)/lib/libsmb2.dylib や libsmb2.a)の両方に対応する。
+# 見つからなければ最後の候補(手元ビルドの場所)を既定値として使う。
 LIBSMB2_DIR ?= $(HOME)/developer/libsmb2
 LIBSMB2_INC ?= $(LIBSMB2_DIR)/include
-LIBSMB2_A ?= $(LIBSMB2_DIR)/lib/.libs/libsmb2.a
+LIBSMB2_A ?= $(firstword \
+    $(wildcard $(LIBSMB2_DIR)/lib/libsmb2.dylib) \
+    $(wildcard $(LIBSMB2_DIR)/lib/libsmb2.a) \
+    $(wildcard $(LIBSMB2_DIR)/lib/.libs/libsmb2.a) \
+    $(LIBSMB2_DIR)/lib/.libs/libsmb2.a)
 
 CC ?= gcc
 CFLAGS += -std=gnu99 -Wall -fobjc-exceptions -I$(LIBSMB2_INC)
