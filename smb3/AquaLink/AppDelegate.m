@@ -1267,8 +1267,11 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 {
     /* シェルのシングルクォート内でmountPoint自体にシングルクォートが含まれていても
        安全になるようエスケープする: ' -> '\'' */
+    /* "do shell script ... with administrator privileges" は通常のログインシェルより
+       限定されたPATHで動くことがあり、/sbin が含まれない場合 "umount" が単なるコマンド名
+       のままだと見つからない。既存の runUnmountCommand: と同様にフルパスで呼ぶ。 */
     NSString *shellQuoted = AQReplaceAll(mountPoint, @"'", @"'\\''");
-    NSString *shellCommand = [NSString stringWithFormat:@"umount '%@' || umount -f '%@'", shellQuoted, shellQuoted];
+    NSString *shellCommand = [NSString stringWithFormat:@"/sbin/umount '%@' || /sbin/umount -f '%@'", shellQuoted, shellQuoted];
 
     /* 上のシェルコマンド文字列を、AppleScriptの文字列リテラルとして埋め込めるようエスケープする */
     NSString *scriptQuoted = AQReplaceAll(shellCommand, @"\\", @"\\\\");
