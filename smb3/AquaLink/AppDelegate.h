@@ -109,6 +109,6 @@
 - (void)unmountAction:(id)sender;
 - (void)doUnmount;
 - (BOOL)runUnmountCommand:(NSString *)mountPoint force:(BOOL)force;
-- (BOOL)runPrivilegedUnmount:(NSString *)mountPoint;
+- (BOOL)runPrivilegedUnmount:(NSString *)mountPoint errorMessage:(NSString **)outErrorMessage;
 
 @end

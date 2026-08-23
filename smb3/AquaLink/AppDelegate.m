@@ -1178,6 +1178,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     BOOL unmountOK = NO;
+    NSString *privilegedError = nil;
 
     if (mountPointPath != nil) {
         /* まず通常のumountを試し、失敗したら-fで強制する。
@@ -1194,7 +1195,7 @@ static NSString *FriendlyConnectError(NSString *raw)
                マウントした結果、そのマウントがroot所有として扱われ、一般ユーザー権限の
                umountが "Operation not permitted" で拒否されることがある(実機で確認済み)。
                最終手段として、管理者パスワードのダイアログを出してumountする。 */
-            unmountOK = [self runPrivilegedUnmount:mountPointPath];
+            unmountOK = [self runPrivilegedUnmount:mountPointPath errorMessage:&privilegedError];
         }
     } else {
         unmountOK = YES;
@@ -1211,6 +1212,10 @@ static NSString *FriendlyConnectError(NSString *raw)
         mountPointPath = nil;
         mounted = NO;
         resultMessage = L("取り外しました");
+    } else if (privilegedError != nil) {
+        /* 原因の切り分けを次回以降のやり取り無しでできるよう、実際のエラー内容を表示する
+           (実機ごとの環境差でここが変わりうるため、汎用メッセージだけでは診断できなかった)。 */
+        resultMessage = [NSString stringWithFormat:L("取り外しに失敗しました: %@"), privilegedError];
     } else {
         /* 取り外しに失敗した場合はサーバーを止めない(壊れたマウントを作らないため) */
         resultMessage = L("取り外しに失敗しました。Finderから取り出すか、再度お試しください");
@@ -1262,8 +1267,11 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 }
 
 /* バックグラウンドスレッドから呼ばれる。管理者パスワードのダイアログを出してumountする。
-   通常のumount(force含む)が権限不足で失敗した場合の最終手段。 */
-- (BOOL)runPrivilegedUnmount:(NSString *)mountPoint
+   通常のumount(force含む)が権限不足で失敗した場合の最終手段。
+   失敗時、outErrorMessage(NULL可)に実際のエラー内容(または「キャンセルされました」)を返す。
+   環境ごとに失敗理由が変わりうるため、汎用メッセージだけでは実機ごとの原因切り分けが
+   できなかった(実際に発生した不具合: バグ修正後も原因不明の失敗が続いた)。 */
+- (BOOL)runPrivilegedUnmount:(NSString *)mountPoint errorMessage:(NSString **)outErrorMessage
 {
     /* シェルのシングルクォート内でmountPoint自体にシングルクォートが含まれていても
        安全になるようエスケープする: ' -> '\'' */
@@ -1285,7 +1293,22 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     [appleScript executeAndReturnError:&errorInfo];
     [appleScript release];
 
-    return (errorInfo == nil);
+    if (errorInfo == nil) {
+        return YES;
+    }
+
+    if (outErrorMessage != NULL) {
+        NSNumber *errNum = [errorInfo objectForKey:NSAppleScriptErrorNumber];
+        if (errNum != nil && [errNum intValue] == -128) {
+            /* -128 はユーザーがパスワードダイアログをキャンセルした場合 */
+            *outErrorMessage = L("パスワード入力がキャンセルされました");
+        } else {
+            NSString *errMsg = [errorInfo objectForKey:NSAppleScriptErrorMessage];
+            *outErrorMessage = (errMsg != nil) ? errMsg
+                : [NSString stringWithFormat:@"AppleScript error %@", errNum];
+        }
+    }
+    return NO;
 }
 
 /* ============ ブックマーク(接続履歴) ============ */
