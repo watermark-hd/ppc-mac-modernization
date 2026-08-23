@@ -6,6 +6,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <Security/Security.h>
 
 /* 古いgcc(4.0系)はObjective-Cの @"..." 日本語リテラルを正しく解釈しないことがあるため、
@@ -71,6 +74,7 @@ static NSDictionary *EnglishTranslations(void)
             @"Failed to disconnect. Try ejecting from Finder, or try again.", UTF8("取り外しに失敗しました。Finderから取り出すか、再度お試しください"),
             @"Failed to disconnect: %@", UTF8("取り外しに失敗しました: %@"),
             @"Password entry was cancelled", UTF8("パスワード入力がキャンセルされました"),
+            @"Privileged umount failed", UTF8("管理者権限でのumountに失敗しました"),
             @"Share This Mac (as NAS)", UTF8("このMacを共有(NAS化)"),
             @"Shared Folders:", UTF8("共有フォルダ一覧:"),
             @"Folder Path", UTF8("フォルダパス"),
@@ -1272,45 +1276,87 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
    通常のumount(force含む)が権限不足で失敗した場合の最終手段。
    失敗時、outErrorMessage(NULL可)に実際のエラー内容(または「キャンセルされました」)を返す。
    環境ごとに失敗理由が変わりうるため、汎用メッセージだけでは実機ごとの原因切り分けが
-   できなかった(実際に発生した不具合: バグ修正後も原因不明の失敗が続いた)。 */
+   できなかった(実際に発生した不具合: バグ修正後も原因不明の失敗が続いた)。
+
+   当初はNSAppleScriptの "do shell script ... with administrator privileges" を使っていたが、
+   ある実機(パッチ当てOSイメージ)でパスワード入力後も "Operation not permitted" が
+   出続けることが判明した。umount(2)は本物のroot権限なら無条件で成功するはずなので、
+   これはAppleScript経由の昇格がその環境では実際にはrootになれていないことを示す。
+   より低レベルなAuthorization Services APIを直接使う方式に切り替える。 */
 - (BOOL)runPrivilegedUnmount:(NSString *)mountPoint errorMessage:(NSString **)outErrorMessage
 {
     /* シェルのシングルクォート内でmountPoint自体にシングルクォートが含まれていても
        安全になるようエスケープする: ' -> '\'' */
-    /* "do shell script ... with administrator privileges" は通常のログインシェルより
-       限定されたPATHで動くことがあり、/sbin が含まれない場合 "umount" が単なるコマンド名
-       のままだと見つからない。既存の runUnmountCommand: と同様にフルパスで呼ぶ。 */
     NSString *shellQuoted = AQReplaceAll(mountPoint, @"'", @"'\\''");
-    NSString *shellCommand = [NSString stringWithFormat:@"/sbin/umount '%@' || /sbin/umount -f '%@'", shellQuoted, shellQuoted];
+    /* stderrも2>&1でまとめて拾う。AuthorizationExecuteWithPrivilegesが起動する
+       子プロセスは、呼び出し元から見て直接のchildではないことがあり wait() で
+       終了コードを確実に取得できないため、「出力が空 = 成功」(umountは成功時に
+       何も出力しない)という判定方法を使う。 */
+    NSString *shellCommand = [NSString stringWithFormat:
+        @"/sbin/umount '%@' 2>&1 || /sbin/umount -f '%@' 2>&1", shellQuoted, shellQuoted];
 
-    /* 上のシェルコマンド文字列を、AppleScriptの文字列リテラルとして埋め込めるようエスケープする */
-    NSString *scriptQuoted = AQReplaceAll(shellCommand, @"\\", @"\\\\");
-    scriptQuoted = AQReplaceAll(scriptQuoted, @"\"", @"\\\"");
-
-    NSString *scriptSource = [NSString stringWithFormat:
-        @"do shell script \"%@\" with administrator privileges", scriptQuoted];
-
-    NSAppleScript *appleScript = [[NSAppleScript alloc] initWithSource:scriptSource];
-    NSDictionary *errorInfo = nil;
-    [appleScript executeAndReturnError:&errorInfo];
-    [appleScript release];
-
-    if (errorInfo == nil) {
-        return YES;
-    }
-
-    if (outErrorMessage != NULL) {
-        NSNumber *errNum = [errorInfo objectForKey:NSAppleScriptErrorNumber];
-        if (errNum != nil && [errNum intValue] == -128) {
-            /* -128 はユーザーがパスワードダイアログをキャンセルした場合 */
-            *outErrorMessage = L("パスワード入力がキャンセルされました");
-        } else {
-            NSString *errMsg = [errorInfo objectForKey:NSAppleScriptErrorMessage];
-            *outErrorMessage = (errMsg != nil) ? errMsg
-                : [NSString stringWithFormat:@"AppleScript error %@", errNum];
+    AuthorizationRef authRef = NULL;
+    OSStatus status = AuthorizationCreate(NULL, kAuthorizationEmptyEnvironment,
+                                           kAuthorizationFlagDefaults, &authRef);
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = [NSString stringWithFormat:@"AuthorizationCreate error %d", (int)status];
         }
+        return NO;
     }
-    return NO;
+
+    AuthorizationItem right = { kAuthorizationRightExecute, 0, NULL, 0 };
+    AuthorizationRights rightSet = { 1, &right };
+    AuthorizationFlags authFlags = kAuthorizationFlagDefaults
+                                  | kAuthorizationFlagInteractionAllowed
+                                  | kAuthorizationFlagPreAuthorize
+                                  | kAuthorizationFlagExtendRights;
+
+    status = AuthorizationCopyRights(authRef, &rightSet, kAuthorizationEmptyEnvironment, authFlags, NULL);
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            /* errAuthorizationCanceled はユーザーがパスワードダイアログをキャンセルした場合 */
+            *outErrorMessage = (status == errAuthorizationCanceled)
+                ? L("パスワード入力がキャンセルされました")
+                : [NSString stringWithFormat:@"Authorization error %d", (int)status];
+        }
+        AuthorizationFree(authRef, kAuthorizationFlagDefaults);
+        return NO;
+    }
+
+    char *args[] = { (char *)"-c", (char *)[shellCommand UTF8String], NULL };
+    FILE *outputPipe = NULL;
+    status = AuthorizationExecuteWithPrivileges(authRef, "/bin/sh", kAuthorizationFlagDefaults,
+                                                 args, &outputPipe);
+
+    NSMutableData *outputData = [NSMutableData data];
+    if (status == errAuthorizationSuccess && outputPipe != NULL) {
+        int fd = fileno(outputPipe);
+        char buf[512];
+        ssize_t n;
+        while ((n = read(fd, buf, sizeof(buf))) > 0) {
+            [outputData appendBytes:buf length:(unsigned)n];
+        }
+        fclose(outputPipe);
+        int wstatus = 0;
+        while (wait(&wstatus) == -1 && errno == EINTR) { }
+    }
+
+    AuthorizationFree(authRef, kAuthorizationFlagDestroyRights);
+
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = [NSString stringWithFormat:@"AuthorizationExecuteWithPrivileges error %d", (int)status];
+        }
+        return NO;
+    }
+
+    BOOL ok = ([outputData length] == 0);
+    if (!ok && outErrorMessage != NULL) {
+        NSString *outputStr = [[[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding] autorelease];
+        *outErrorMessage = ([outputStr length] > 0) ? outputStr : L("管理者権限でのumountに失敗しました");
+    }
+    return ok;
 }
 
 /* ============ ブックマーク(接続履歴) ============ */
