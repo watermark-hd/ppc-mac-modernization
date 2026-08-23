@@ -136,16 +136,36 @@ iBook 実機で確認済み:
 - **デスクトップにアイコンが出ない**: マウント自体は成功していても、Finder環境設定の
   「一般」→「デスクトップに表示する項目」→「接続中のサーバ」がオフだと見た目に現れない。
   `/Volumes` を直接開けば確認できる。今回はこの設定が過去にコマンドでオフにされていたのが原因だった。
-- **[MacRumorsで報告された不具合] 一部環境で `umount` が権限不足で失敗する**:
+- **[MacRumorsで報告された不具合・未解決/既知の制限として決着] 一部環境で `umount` が
+  権限不足で失敗する**:
   非公式パッチ当ての10.6.8(Snow Leopard) PPCイメージ利用者から、「取り外す」が常に
   失敗するという報告(2026-08-22)。実機で `umount` (sudo無し)を手動実行してもらったところ
   `Operation not permitted` で失敗し、`sudo umount` なら成功することを確認。原因は
   `mount_webdav` がsetuid rootで動作するため、マウント自体がroot所有として扱われ、
   一般ユーザー権限では取り外せなくなっていたこと(この環境は別途 `mount_webdav` 自身の
   setuidビットが失われる不具合も抱えていた個体だった。両者は別の症状)。
-  対策として、通常の`umount`→`umount -f`が両方失敗した場合の最終手段として、
-  `NSAppleScript`の`do shell script ... with administrator privileges`で管理者パスワードの
-  ダイアログを出してumountするフォールバックを追加(`runPrivilegedUnmount:`)。
+
+  対策として、通常の`umount`→`umount -f`が両方失敗した場合の最終手段を2種類試した。
+  1つ目は`NSAppleScript`の`do shell script ... with administrator privileges`(`runPrivilegedUnmount:`)。
+  これでもまだ`Operation not permitted`が再現。2つ目として、AppleScriptを経由しない
+  より低レベルな`AuthorizationExecuteWithPrivileges`(Security.framework)に切り替えたが、
+  **これでも症状は変わらず**。
+
+  `umount(2)`は本物のroot権限であれば無条件で成功するはずのシステムコールであり、
+  2種類の異なるAPI(どちらも最終的にはSecurityAgent/認証データベースを経由する)が
+  両方とも同じ失敗をすることから、**このパッチ当てイメージのGUI認証まわりの仕組み自体が
+  壊れていて、アプリ側の実装をどう変えても直せない可能性が高い**と判断した。
+  一方でターミナルの`sudo`(GUI認証を経由しない別系統の仕組み)は一貫して成功している。
+
+  代替案として、FUSE(ユーザー権限のままマウント・取り外しができ、この種の問題が
+  原理的に起きない)も検討したが、**MacFUSE/OSXFUSEはMac OS X 10.4 Tigerを一度も
+  サポートしたことがなく**、このプロジェクトの主軸であるTiger機とは根本的に噛み合わない
+  ため見送った(PowerPC対応自体も2011年頃には打ち切られている)。
+
+  **最終結論: この特定の(非公式パッチ当て)環境については既知の制限として受け入れる。**
+  GUI経由の「取り外す」が失敗した場合は、ターミナルで`sudo umount -f /Volumes/共有名`を
+  手動実行するのが確実な回避策。Tiger/Leopard/未改造のSnow Leopardなど、通常の環境では
+  この問題は起きていない(これまでの実機検証・報告いずれも通常環境では成功している)。
 
 ## iBookをNAS化する(逆方向: 現代機 → iBook) ✅ 完了
 
