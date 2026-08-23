@@ -69,6 +69,8 @@ static NSDictionary *EnglishTranslations(void)
             @"Disconnecting...", UTF8("取り外し中..."),
             @"Disconnected", UTF8("取り外しました"),
             @"Failed to disconnect. Try ejecting from Finder, or try again.", UTF8("取り外しに失敗しました。Finderから取り出すか、再度お試しください"),
+            @"Failed to disconnect: %@", UTF8("取り外しに失敗しました: %@"),
+            @"Password entry was cancelled", UTF8("パスワード入力がキャンセルされました"),
             @"Share This Mac (as NAS)", UTF8("このMacを共有(NAS化)"),
             @"Shared Folders:", UTF8("共有フォルダ一覧:"),
             @"Folder Path", UTF8("フォルダパス"),
