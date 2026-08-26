@@ -76,6 +76,7 @@ static NSDictionary *EnglishTranslations(void)
             @"Password entry was cancelled", UTF8("パスワード入力がキャンセルされました"),
             @"Privileged umount failed", UTF8("管理者権限でのumountに失敗しました"),
             @"Share This Mac (as NAS)", UTF8("このMacを共有(NAS化)"),
+            @"⚠️ LAN use only. Passwords are sent unencrypted (plain HTTP). Do not expose this to the internet (e.g. via router port forwarding).", UTF8("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"),
             @"Shared Folders:", UTF8("共有フォルダ一覧:"),
             @"Folder Path", UTF8("フォルダパス"),
             @"Username:", UTF8("ユーザー名:"),
@@ -1466,7 +1467,7 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 - (void)showShareWindow:(id)sender
 {
     if (shareWindow == nil) {
-        NSRect frame = NSMakeRect(150, 120, 520, 420);
+        NSRect frame = NSMakeRect(150, 120, 520, 460);
         shareWindow = [[NSWindow alloc] initWithContentRect:frame
                                                     styleMask:(NSTitledWindowMask | NSClosableWindowMask)
                                                       backing:NSBackingStoreBuffered
@@ -1586,6 +1587,17 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [windowsGuideButton setAction:@selector(showWindowsGuideAction:)];
         [content addSubview:windowsGuideButton];
         [windowsGuideButton release];
+
+        NSTextField *shareWarningLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 88, w - 20, 34)];
+        [shareWarningLabel setEditable:NO];
+        [shareWarningLabel setBezeled:NO];
+        [shareWarningLabel setDrawsBackground:NO];
+        [[shareWarningLabel cell] setWraps:YES];
+        [shareWarningLabel setFont:[NSFont systemFontOfSize:10]];
+        [shareWarningLabel setTextColor:[NSColor darkGrayColor]];
+        [shareWarningLabel setStringValue:L("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。")];
+        [content addSubview:shareWarningLabel];
+        [shareWarningLabel release];
 
         shareStatusLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, w - 20, 70)];
         [shareStatusLabel setEditable:NO];

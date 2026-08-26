@@ -177,6 +177,14 @@ iBook 実機で確認済み:
 (`open`/`read`/`write`/`opendir`等)に置き換え、`127.0.0.1`限定ではなく`INADDR_ANY`で
 LAN上の他機器からも接続できるようにし、Basic認証とパストラバーサル(`../`)対策を追加した。
 
+**⚠️ セキュリティ上の注意(LAN限定で使うこと):** この機能はTLSを使わず、**平文HTTP上で
+Basic認証**を行っている(Tiger標準の古いOpenSSLではTLS1.2以降がまともに使えず、それを
+避けるための意図的な設計判断)。つまりパスワードは暗号化されずにネットワーク上を流れる。
+**信頼できる自宅LANの中だけで使うことを強く前提としており、ルーターのポート開放等で
+インターネットから直接アクセスできる状態にしてはいけない。** Hackadayの記事([Native
+SMB3 Client Brings Modern NAS Access To 20-Year-Old PowerPC Macs](https://hackaday.com/2026/08/25/native-smb3-client-brings-modern-nas-access-to-20-year-old-powerpc-macs/))
+のコメント欄で指摘を受け、2026-08-25にこの注意書きを追加した。
+
 AquaLinkのメインウィンドウに「このMacを共有(NAS化)...」ボタンがあり、共有フォルダ・
 ユーザー名・パスワード・ポートを設定して開始する。実機で以下を確認済み:
 
