@@ -72,6 +72,7 @@ static NSDictionary *EnglishTranslations(void)
             @"Disconnecting...", UTF8("取り外し中..."),
             @"Disconnected", UTF8("取り外しました"),
             @"Failed to disconnect. Try ejecting from Finder, or try again.", UTF8("取り外しに失敗しました。Finderから取り出すか、再度お試しください"),
+            @"Require SMB3 encryption (won't connect to shares that don't support it)", UTF8("SMB3暗号化を必須にする(対応していない共有には接続できません)"),
             @"Failed to disconnect: %@", UTF8("取り外しに失敗しました: %@"),
             @"Password entry was cancelled", UTF8("パスワード入力がキャンセルされました"),
             @"Privileged umount failed", UTF8("管理者権限でのumountに失敗しました"),
@@ -462,6 +463,19 @@ static NSString *FriendlyConnectError(NSString *raw)
     [content addSubview:connectButton];
     [connectButton release];
 
+    /* libsmb2は何も指定しなければ「相手が暗号化を要求すれば暗号化する、
+       要求しなければ平文のまま繋ぐ」という透過的な挙動になる。
+       このチェックボックスは、それをさらに一歩進めて「相手が暗号化に対応して
+       いなければ、そもそも接続自体を拒否する」という明示的なモードに切り替える。
+       デフォルトはオフ(今まで通りの挙動を変えないため)。 */
+    encryptCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(10, oldH - 42, 400, 18)];
+    [encryptCheckbox setButtonType:NSSwitchButton];
+    [encryptCheckbox setTitle:L("SMB3暗号化を必須にする(対応していない共有には接続できません)")];
+    [encryptCheckbox setState:NSOffState];
+    [encryptCheckbox setAutoresizingMask:(NSViewMinYMargin)];
+    [content addSubview:encryptCheckbox];
+    [encryptCheckbox release];
+
     pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, oldH - 60, 480, 18)];
     [pathLabel setEditable:NO];
     [pathLabel setBezeled:NO];
@@ -607,9 +621,11 @@ static NSString *FriendlyConnectError(NSString *raw)
     [connectButton setEnabled:NO];
     [statusLabel setStringValue:L("接続中...")];
 
+    NSNumber *requireEncryption = [NSNumber numberWithBool:([encryptCheckbox state] == NSOnState)];
     NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
                            urlString, @"url",
-                           (password ? password : @""), @"password", nil];
+                           (password ? password : @""), @"password",
+                           requireEncryption, @"requireEncryption", nil];
     [NSThread detachNewThreadSelector:@selector(doConnect:) toTarget:self withObject:args];
 }
 
@@ -619,6 +635,7 @@ static NSString *FriendlyConnectError(NSString *raw)
 
     NSString *urlString = [args objectForKey:@"url"];
     NSString *password = [args objectForKey:@"password"];
+    BOOL requireEncryption = [[args objectForKey:@"requireEncryption"] boolValue];
 
     [smb2Lock lock];
     if (smb2 != NULL) {
@@ -647,6 +664,10 @@ static NSString *FriendlyConnectError(NSString *raw)
     }
 
     smb2_set_security_mode(ctx, SMB2_NEGOTIATE_SIGNING_ENABLED);
+    /* 何も指定しなければ、相手が暗号化を要求する場合は透過的に暗号化されるが、
+       ここでチェックが入っていれば、相手が暗号化に対応していない場合は
+       接続自体を失敗させる(smb2_set_sealのコメント参照)。 */
+    smb2_set_seal(ctx, requireEncryption ? 1 : 0);
     if (url->user) {
         smb2_set_user(ctx, url->user);
     }

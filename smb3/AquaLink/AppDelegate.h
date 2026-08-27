@@ -13,6 +13,7 @@
     NSComboBox *urlField;
     NSTextField *shareField;
     NSSecureTextField *passwordField;
+    NSButton *encryptCheckbox; /* SMB3暗号化(seal)を必須にするかどうか */
     NSButton *connectButton;
     NSButton *upButton;
     NSButton *mountButton;
