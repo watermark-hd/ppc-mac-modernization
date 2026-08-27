@@ -16,15 +16,23 @@
 ```bash
 git clone --depth 1 https://github.com/sahlberg/libsmb2.git
 cd libsmb2
-git apply /path/to/libsmb2_tiger_ppc.patch   # 本ディレクトリのパッチを適用
+git apply /path/to/libsmb2_tiger_ppc.patch                  # 本ディレクトリのパッチを適用
+git apply /path/to/libsmb2-ppc-sessionid-endian-fix.patch    # 同上、SMB3暗号化を使うなら必須
 LIBTOOLIZE=glibtoolize ./bootstrap            # 母艦(Homebrew)にautomake/libtoolが必要
 ```
 
-パッチの内容: `configure.ac` に `CommonCrypto/CommonCrypto.h` の有無チェックを追加し、
+`libsmb2_tiger_ppc.patch`の内容: `configure.ac` に `CommonCrypto/CommonCrypto.h` の有無チェックを追加し、
 `lib/aes.c` / `lib/aes_apple.c` の `#ifdef __APPLE__` 判定を
 `#if defined(__APPLE__) && defined(HAVE_COMMONCRYPTO_COMMONCRYPTO_H)` に変更。
 Tiger の SDK には CommonCrypto フレームワークが無いため、素の `#ifdef __APPLE__` だけでは
 誤ってCommonCrypto版のAES実装を選んでしまいビルドが失敗する。
+
+`libsmb2-ppc-sessionid-endian-fix.patch`の内容: **ビッグエンディアン環境でSMB3暗号化
+(`smb2_set_seal`)を使うと接続が必ず失敗する、libsmb2側のバグの修正。** 詳細・経緯は
+本READMEの「SMB3暗号化の必須化オプション」の節、および
+[upstream Issue #477](https://github.com/sahlberg/libsmb2/issues/477)を参照。
+SMB3暗号化機能を使わない(接続画面のチェックボックスを入れない)なら無くても動くが、
+将来公式の修正版がリリースされるまでは当てておくことを推奨。
 
 ### 2. iBookに転送してビルド
 
