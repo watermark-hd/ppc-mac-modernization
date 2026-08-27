@@ -1,0 +1,14 @@
+--- a/lib/smb3-seal.c
++++ b/lib/smb3-seal.c
+@@ -103,7 +103,10 @@
+         memcpy(&pdu->crypt[36], &u32, 4);
+         u16 = htole16(SMB_ENCRYPTION_AES128_CCM);
+         memcpy(&pdu->crypt[42], &u16, 2);
+-        memcpy(&pdu->crypt[44], &smb2->session_id, 8);
++        {
++                uint64_t sid_le = htole64(smb2->session_id);
++                memcpy(&pdu->crypt[44], &sid_le, 8);
++        }
+
+         spl = 52;  /* transform header */
+         for (tmp_pdu = pdu; tmp_pdu; tmp_pdu = tmp_pdu->next_compound) {

@@ -270,29 +270,61 @@ AquaLinkのメインウィンドウに「このMacを共有(NAS化)...」ボタ�
 - **Finderのアイコンキャッシュ**: 正しい`.icns`に差し替えた後も、Dockには反映されても
   Finder上の表示だけ古いまま(または汎用の書類アイコン)ということがあった。`killall Finder`で解消。
 
-## SMB3暗号化の必須化オプション ⚠️ 未解決(原因調査中)
+## SMB3暗号化の必須化オプション ✅ 解決(libsmb2側のビッグエンディアン不具合と判明)
 
 Hackadayでの記事掲載(2026-08-25)のコメント欄で「暗号化されたSMB3シェアに対応していない」と
 指摘されたのを受けて追加。接続画面に「SMB3暗号化を必須にする」チェックボックスを追加し、
 `smb2_set_seal(ctx, 1)`を呼ぶようにした(デフォルトはオフ、今まで通りの挙動)。
 
-**チェックを入れて接続すると、macOS標準のSMB共有(自宅LAN内、現代のMac)に対して
-`POLLHUP, socket error`で毎回失敗する。** チェックを外せば同じ共有に問題なく繋がる。
+### 調査の経緯
 
-調査した内容:
+チェックを入れて接続すると、macOS標準のSMB共有(自宅LAN内、現代のMac)に対して
+`POLLHUP, socket error`で毎回失敗した。チェックを外せば同じ共有に問題なく繋がる。
 
 - libsmb2の`smb2_set_seal()`には既知の設計不整合(GitHub issue #465/#466、2026-07-17に
-  修正)があったため、修正後のコミットからlibsmb2をビルドし直して検証した
-  (Tiger向けに`--without-libkrb5`が必要、かつ2025年に追加された`aes_apple.c`が
-  `CommonCrypto/CommonCrypto.h`(Tigerに無い)を要求するため、参照AES実装に差し替える
-  パッチが必要だった)
-- **この修正版でビルドし直しても、症状は変わらなかった。** つまりこのissueの不具合が
-  原因ではない
-- パケットキャプチャで実際の通信内容を確認しようとしたが、`tcpdump`の実行に管理者パスワードが
-  必要で、SSH経由の非対話操作では突破できず、そこで調査が止まっている
+  修正)があったため、修正後のコミットからlibsmb2をビルドし直して検証したが、**症状は
+  変わらなかった**(この不具合が原因ではないと判明)
+- 実機で`tcpdump`によるパケットキャプチャを取得(依頼者が実機で`sudo`を対話実行)し、
+  Wireshark等が無い環境のため`tcpdump -X`の生バイト列を手動で解読した
+- **macOSだけでなくWindows 11の標準SMB共有に対しても、全く同じ場所(認証成功直後、
+  暗号化パケット送信直後)で失敗する**ことを確認。Windowsは`RST`、macOSは`FIN`と
+  切断のされ方は違うが、発生箇所は同一
+- Apple・Microsoftという別々の実装が同じ箇所で拒否している = **サーバー側ではなく
+  クライアント(libsmb2)が送る暗号化パケット自体が壊れている**と判断
 
-**現状の結論:** 原因未特定。libsmb2の暗号化ネゴシエーションと、macOS標準のSMBサーバーとの間に
-何らかの相性問題がある可能性が高いが、Linux Samba(`server smb encrypt = required`)等の
-別サーバーでの検証、または実機での`tcpdump`(対話的にパスワード入力できる環境)による
-パケットキャプチャが次のステップ。チェックボックス自体は残しているが、**実質的に動作しない
-機能として認識しておくこと**。
+### 根本原因
+
+`lib/smb3-seal.c`の`smb3_encrypt_pdu()`内、SMB3暗号化ヘッダーの`SessionId`フィールドの
+書き込み処理が、他のフィールド(`OriginalMessageSize`や`EncryptionAlgorithm`)は
+`htole32`/`htole16`で明示的にlittle-endianへ変換しているのに、**`session_id`だけ
+変換せず生の`memcpy`をしていた**。
+
+```c
+memcpy(&pdu->crypt[44], &smb2->session_id, 8);  // 修正前: エンディアン変換なし
+```
+
+`smb2->session_id`はライブラリの他の箇所(`smb2_set_uint64`/`smb2_get_uint64`)の作法通り
+ホストのバイト順で保持されている値なので、通信線に流す際はlittle-endianへの変換が必須。
+**x86/ARMはネイティブでlittle-endianのため、この変換漏れがあっても偶然正しく動いてしまい、
+表面化しない。** PowerPC(ビッグエンディアン)でSMB3暗号化を使って初めて、SessionIdが
+バイト逆順の意味不明な値になり、サーバー側が「不正なセッションからのパケット」として
+即座に接続を切っていた。v6.0.0(タグ)・master(2026-08時点)の両方に存在することを確認済み。
+
+### 修正
+
+```c
+{
+        uint64_t sid_le = htole64(smb2->session_id);
+        memcpy(&pdu->crypt[44], &sid_le, 8);
+}
+```
+
+パッチは`smb3/libsmb2-ppc-sessionid-endian-fix.patch`に保存済み。実機のiBookで
+libsmb2(v6.0.0ベース)にこのパッチを適用してビルドし直し、**macOS・Windows 11の
+両方の標準SMB共有に対して、暗号化必須モードでの接続が成功することを実機で確認済み**。
+
+**TODO:**
+- libsmb2の作者(sahlberg氏)へGitHub Issueとして報告する
+- PPCPortsの`devel/libsmb2` Portfileにもこのパッチを当ててもらう必要がある
+  (barracuda156氏へ共有すること。同Portfileには`patch-fix-kerberos.diff`という
+  別件のパッチが既に採用されている実績があるので、同様の形で追加してもらえる見込み)
