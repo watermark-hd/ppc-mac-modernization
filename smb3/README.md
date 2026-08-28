@@ -321,18 +321,24 @@ memcpy(&pdu->crypt[44], &smb2->session_id, 8);  // 修正前: エンディアン
 ### 修正
 
 ```c
-{
-        uint64_t sid_le = htole64(smb2->session_id);
-        memcpy(&pdu->crypt[44], &sid_le, 8);
-}
+*(uint64_t *)(void *)&pdu->crypt[44] = htole64(smb2->session_id);
 ```
+
+(当初は`{ uint64_t sid_le = ...; memcpy(...); }`という形で書いていたが、
+[Issue #477](https://github.com/sahlberg/libsmb2/issues/477)でsahlberg氏本人から
+「スコープのためだけの波括弧は好みではない」とスタイルの指摘を受け、上記の形に修正した。)
 
 パッチは`smb3/libsmb2-ppc-sessionid-endian-fix.patch`に保存済み。実機のiBookで
 libsmb2(v6.0.0ベース)にこのパッチを適用してビルドし直し、**macOS・Windows 11の
 両方の標準SMB共有に対して、暗号化必須モードでの接続が成功することを実機で確認済み**。
 
-**TODO:**
-- libsmb2の作者(sahlberg氏)へGitHub Issueとして報告する
-- PPCPortsの`devel/libsmb2` Portfileにもこのパッチを当ててもらう必要がある
-  (barracuda156氏へ共有すること。同Portfileには`patch-fix-kerberos.diff`という
-  別件のパッチが既に採用されている実績があるので、同様の形で追加してもらえる見込み)
+**進捗:**
+- ✅ libsmb2の作者(sahlberg氏)へGitHub Issueとして報告
+  ([#477](https://github.com/sahlberg/libsmb2/issues/477))。作者本人からバグ自体は
+  認められ、PRとして送るよう依頼された
+- ✅ 修正PRを送付済み: [sahlberg/libsmb2#478](https://github.com/sahlberg/libsmb2/pull/478)
+- ✅ PPCPortsの`devel/libsmb2` Portfileにもこのパッチを追加するPRを送付済み:
+  [macos-powerpc/powerpc-ports#236](https://github.com/macos-powerpc/powerpc-ports/pull/236)
+  (`aqualink`のPR [#232](https://github.com/macos-powerpc/powerpc-ports/pull/232)とは
+  別PR。barracuda156氏いわく、libsmb2ポートの利用者は今のところAquaLinkのみのため、
+  レビュー不要ですぐマージできるとのこと)
