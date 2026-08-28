@@ -47,13 +47,14 @@ AquaLink does two things:
 
 As far as we know, this is the first working SMB2/3 client for PowerPC Mac OS X.
 
-AquaLink can also require SMB3 encryption end-to-end (an optional checkbox on the
-connect screen). Building that feature surfaced a real byte-order bug in libsmb2
-itself — the SMB3 encryption header's SessionId field wasn't being swapped to
-wire order on big-endian hosts, so encrypted connections silently failed on any
-big-endian platform libsmb2 supports (PS3, PS Vita, 3DS, ESP32, and more, not
-just PPC Macs). Found via packet capture on real Tiger hardware, reported
-upstream, and merged: [sahlberg/libsmb2#478](https://github.com/sahlberg/libsmb2/pull/478).
+AquaLink now supports SMB3 encryption, including an option to require it
+end-to-end (a checkbox on the connect screen). Building this surfaced a real
+byte-order bug in libsmb2 itself — the SMB3 encryption header's SessionId
+field wasn't being swapped to wire order on big-endian hosts, so encrypted
+connections silently failed on any big-endian platform libsmb2 supports (PS3,
+PS Vita, 3DS, ESP32, and more, not just PPC Macs). Found via packet capture on
+real Tiger hardware, reported upstream, and merged:
+[sahlberg/libsmb2#478](https://github.com/sahlberg/libsmb2/pull/478).
 
 ## Aquafox Japanese localization
 
@@ -131,13 +132,13 @@ AquaLink は2つの機能を持っています。
 把握している限り、PowerPC Mac OS X 向けに実際に動作する SMB2/3 クライアントは、これが
 世界初の実例です。
 
-AquaLink は SMB3 暗号化を必須にすることもできます(接続画面のチェックボックスで選択可能)。
-この機能の実装過程で、libsmb2 本体側の実際のバイト順バグを発見しました。SMB3暗号化ヘッダーの
-SessionIdフィールドが、ビッグエンディアン環境向けに通信線上の並び順へ変換されておらず、
-PPC Macに限らず、libsmb2がサポートする他のビッグエンディアン環境(PS3、PS Vita、3DS、
-ESP32など)でも、暗号化接続が黙って失敗していたはずです。実機のTigerでのパケットキャプチャ
-から発見し、上流に報告してマージされました:
-[sahlberg/libsmb2#478](https://github.com/sahlberg/libsmb2/pull/478)。
+AquaLink は SMB3 暗号化に対応しました。暗号化を必須にするオプション(接続画面の
+チェックボックス)も選べます。この機能の実装過程で、libsmb2 本体側の実際のバイト順バグを
+発見しました。SMB3暗号化ヘッダーのSessionIdフィールドが、ビッグエンディアン環境向けに
+通信線上の並び順へ変換されておらず、PPC Macに限らず、libsmb2がサポートする他の
+ビッグエンディアン環境(PS3、PS Vita、3DS、ESP32など)でも、暗号化接続が黙って
+失敗していたはずです。実機のTigerでのパケットキャプチャから発見し、上流に報告して
+マージされました: [sahlberg/libsmb2#478](https://github.com/sahlberg/libsmb2/pull/478)。
 
 ## Aquafox 日本語化
 
