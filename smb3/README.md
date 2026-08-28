@@ -86,6 +86,19 @@ open ~/developer/AquaLink/AquaLink.app   # または実機でダブルクリッ�
 (iBook側の開発系フォルダは `~/developer/` 配下にまとめてある。旧パス`~/libsmb2`/`~/AquaLink`
 参照は移行済み)。
 
+**PPCPorts経由でlibsmb2を入れている場合(この前提が無い場合)**: `git clone`して
+そのまま`make`すると、`AppDelegate.h:3: error: smb2/smb2.h: No such file`のように
+ヘッダーが見つからず失敗する(実際にMacRumorsで報告された不具合)。`LIBSMB2_DIR`に
+PPCPortsのインストール先を渡せばよい。
+
+```bash
+sudo port install libsmb2
+make LIBSMB2_DIR=/opt/local   # PPCPortsのインストール先(通常このパス)
+```
+
+`LIBSMB2_DIR`を1つ指定するだけで、静的ライブラリ(`.a`)・動的ライブラリ(`.dylib`)の
+どちらがインストールされていても自動で見つける(Makefile側で対応済み)。
+
 ### ハマった点
 
 - **日本語文字化け**: 古い gcc(4.0.0)の Objective-C コンパイラが `@"日本語"` 形式の
