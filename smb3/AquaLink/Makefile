@@ -16,8 +16,20 @@ LIBSMB2_A ?= $(firstword \
     $(wildcard $(LIBSMB2_DIR)/lib/.libs/libsmb2.a) \
     $(LIBSMB2_DIR)/lib/.libs/libsmb2.a)
 
+# システム側(/System/Library/Frameworks)のヘッダーがOSアップデート等で
+# 消えていても、/Developer/SDKs 配下のSDKヘッダーが残っていればそちらを
+# 使ってビルドできるようにする。SDKが見つからなければ何も足さず、
+# これまで通りシステム側のヘッダーに頼る。
+SDKROOT ?= $(firstword \
+    $(wildcard /Developer/SDKs/MacOSX10.4u.sdk) \
+    $(wildcard /Developer/SDKs/MacOSX10.5.sdk))
+
 CC ?= gcc
 CFLAGS += -std=gnu99 -Wall -fobjc-exceptions -I$(LIBSMB2_INC)
+ifneq ($(SDKROOT),)
+CFLAGS += -isysroot $(SDKROOT)
+LDFLAGS += -isysroot $(SDKROOT)
+endif
 LDFLAGS += -framework Cocoa -framework Security
 
 OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o

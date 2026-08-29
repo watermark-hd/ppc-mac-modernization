@@ -349,9 +349,64 @@ libsmb2(v6.0.0ベース)にこのパッチを適用してビルドし直し、**
 - ✅ libsmb2の作者(sahlberg氏)へGitHub Issueとして報告
   ([#477](https://github.com/sahlberg/libsmb2/issues/477))。作者本人からバグ自体は
   認められ、PRとして送るよう依頼された
-- ✅ 修正PRを送付済み: [sahlberg/libsmb2#478](https://github.com/sahlberg/libsmb2/pull/478)
-- ✅ PPCPortsの`devel/libsmb2` Portfileにもこのパッチを追加するPRを送付済み:
-  [macos-powerpc/powerpc-ports#236](https://github.com/macos-powerpc/powerpc-ports/pull/236)
-  (`aqualink`のPR [#232](https://github.com/macos-powerpc/powerpc-ports/pull/232)とは
-  別PR。barracuda156氏いわく、libsmb2ポートの利用者は今のところAquaLinkのみのため、
-  レビュー不要ですぐマージできるとのこと)
+- ✅ 修正PRを送付済み・**マージ済み**:
+  [sahlberg/libsmb2#478](https://github.com/sahlberg/libsmb2/pull/478)
+- ✅ AquaLink本体のPPCPortsポート化: [macos-powerpc/powerpc-ports#232](https://github.com/macos-powerpc/powerpc-ports/pull/232)、**マージ済み**
+- PPCPortsの`devel/libsmb2` Portfileにこのパッチを追加するPR
+  ([#236](https://github.com/macos-powerpc/powerpc-ports/pull/236))も送付したが、
+  barracuda156氏が気づかないうちに同内容を直接コミット
+  (`8b844c5`)していたため、#236はクローズ。結果として同じ修正がPPCPorts側にも反映済み
+
+### `aqualink` Portfileのバージョン追従
+
+PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアップに追従して
+都度バージョンを上げる必要がある(自動化されていない)。抜けると、ポート経由で
+ビルドしたユーザーが古いバージョンのまま新機能を使えない、という形で表面化する。
+
+- v0.3のままv0.4(SMB3暗号化オプション)がリリースされたことにbarracuda156氏が気づき、
+  「0.4に上げよう」と提案
+- ✅ [macos-powerpc/powerpc-ports#237](https://github.com/macos-powerpc/powerpc-ports/pull/237)
+  でv0.4へ追従済み(v0.5リリース後、追って追従予定)
+
+## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
+
+saxfun氏が、PPCPorts経由でビルドしたv0.4のAquaLinkから自宅NASへ接続しようとした際に
+報告。ビルド自体は成功するが、接続時に以下のエラーで毎回失敗する:
+
+```
+Connection failed: gss_acquire_cred: (Ein ungültiger Name wurde übergeben.,
+SPNEGO kann keine Mechanismen zum Aushandeln finden.)
+```
+
+(ドイツ語ロケール。意訳: 「不正な名前が渡されました」「SPNEGOが交渉可能な
+メカニズムを見つけられません」)
+
+### 根本原因
+
+libsmb2の認証方式は`smb2_set_authentication()`を呼ばない限りデフォルトで
+`SMB2_SEC_UNDEFINED`(「Kerberosが使えるならKerberos、ダメならNTLM」)になっている。
+
+PPCPortsの`devel/libsmb2` Portfileは`default_variants +gssapi`、つまり
+**Kerberos/GSSAPIサポート付きでビルドされる**。GSS.framework自体はLeopard以降の
+標準フレームワークなので、saxfun氏の環境ではこれが「使える」と判定され、
+`smb2_connect_share()`がまずKerberos経由の認証を試みる。
+
+ところが自宅NAS相手にはKerberosの領域(realm)もKDCも存在しない。この状態で
+`gss_acquire_cred()`を呼ぶと、渡されたユーザー名がKerberosプリンシパルとして
+不正だとしてエラーになり、**SPNEGOがNTLMへフォールバックせず、接続全体が
+失敗する**。x86/ARM向けにKerberosサポート無しでビルドされることが多い他の
+libsmb2利用環境では表面化しにくく、PPCPorts経由でKerberosサポート込みでビルドする
+という組み合わせで初めて顕在化した。
+
+### 修正
+
+AquaLinkが接続する先はほぼ全て家庭用NAS・Windowsのワークグループ共有であり、
+Active Directoryドメイン環境を意図的に使うケースは想定していない。そのため
+接続時に明示的にNTLM認証を指定し、そもそもKerberos経路に入らないようにした:
+
+```objc
+smb2_set_authentication(ctx, SMB2_SEC_NTLMSSP);
+```
+
+実機のiBookで再ビルドし、コンパイルが通ることを確認済み(接続確認はsaxfun氏の
+環境での再テスト待ち)。

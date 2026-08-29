@@ -11,6 +11,9 @@
 #include <sys/wait.h>
 #include <Security/Security.h>
 
+/* NSString版sprintfの単純な置換ヘルパー(定義は本ファイル下部)。前方宣言。 */
+static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *replacement);
+
 /* 古いgcc(4.0系)はObjective-Cの @"..." 日本語リテラルを正しく解釈しないことがあるため、
    C文字列(生バイト列、コンパイラによる再解釈なし)からUTF-8として明示的に組み立てる */
 #define UTF8(cstr) [NSString stringWithUTF8String:(cstr)]
@@ -607,13 +610,16 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSString *share = [shareField stringValue];
     NSString *password = [passwordField stringValue];
 
-    /* ユーザー名・アドレス・共有名を別欄にしたことで入力ミスを防ぎつつ、
-       内部的には従来通り "smb://user@address/share" 形式のURLを組み立てて接続処理に渡す。
-       ユーザー名が空ならゲスト接続として扱う(従来のsmb2_parse_urlの挙動と同じ)。 */
-    NSString *userPart = ([username length] > 0)
-        ? [NSString stringWithFormat:@"%@@", username]
-        : @"";
-    NSString *urlString = [NSString stringWithFormat:@"smb://%@%@/%@", userPart, address, share];
+    /* ユーザー名はURL文字列に埋め込まず、別経路(doConnect:のargs)でsmb2_set_user()に
+       直接渡す。以前は "smb://user@address/share" の形にユーザー名を埋め込んでいたが、
+       libsmb2のsmb2_parse_url()は"@"で単純にuser/serverを区切るだけでURLエスケープの
+       デコードを一切行わないため、Windows 11のMicrosoftアカウント(例:
+       tomo820@hotmail.co.jp)のように**ユーザー名自体に"@"が含まれる場合**、
+       URL中に"@"が2つできてしまい「アドレスが見つからない」エラーになっていた
+       (実際に発生した不具合)。%エスケープで回避しようとしても、smb2_parse_url側が
+       デコードしないため今度は認証情報自体が壊れてしまう。ユーザー名を最初から
+       URLに含めないのが正しい回避策。 */
+    NSString *urlString = [NSString stringWithFormat:@"smb://%@/%@", address, share];
 
     [[NSUserDefaults standardUserDefaults] setObject:username forKey:@"AquaLinkLastUsername"];
     [[NSUserDefaults standardUserDefaults] setObject:share forKey:@"AquaLinkLastShare"];
@@ -624,6 +630,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSNumber *requireEncryption = [NSNumber numberWithBool:([encryptCheckbox state] == NSOnState)];
     NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
                            urlString, @"url",
+                           (username ? username : @""), @"username",
                            (password ? password : @""), @"password",
                            requireEncryption, @"requireEncryption", nil];
     [NSThread detachNewThreadSelector:@selector(doConnect:) toTarget:self withObject:args];
@@ -634,6 +641,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     NSString *urlString = [args objectForKey:@"url"];
+    NSString *username = [args objectForKey:@"username"];
     NSString *password = [args objectForKey:@"password"];
     BOOL requireEncryption = [[args objectForKey:@"requireEncryption"] boolValue];
 
@@ -664,12 +672,27 @@ static NSString *FriendlyConnectError(NSString *raw)
     }
 
     smb2_set_security_mode(ctx, SMB2_NEGOTIATE_SIGNING_ENABLED);
+    /* 認証方式をNTLMSSPに固定する。デフォルト(SMB2_SEC_UNDEFINED)だと
+       「Kerberosが使えるならKerberos、ダメならNTLM」という挙動になるが、
+       libsmb2をKerberosサポート付きでビルドした環境(PPCPortsのdevel/libsmb2は
+       デフォルトでこの変種)だと、ドメインコントローラの無い自宅NAS相手でも
+       まずKerberos(GSSAPI)側を試しに行ってしまう。krb5.confも領域(realm)も
+       無い環境ではgss_acquire_credがそこで失敗し、SPNEGOがNTLMへフォール
+       バックせずに接続全体が落ちる(「Connection failed: gss_acquire_cred:
+       Ein ungültiger Name wurde übergeben., SPNEGO kann keine Mechanismen
+       zum Aushandeln finden.」のような文言で報告された不具合)。
+       AquaLinkが繋ぐ先は家庭用NAS/Windows共有が主眼で、Active Directory
+       環境を意図的に使うケースはまず無いので、最初からNTLMSSPに固定して
+       このKerberos経路自体を回避する。 */
+    smb2_set_authentication(ctx, SMB2_SEC_NTLMSSP);
     /* 何も指定しなければ、相手が暗号化を要求する場合は透過的に暗号化されるが、
        ここでチェックが入っていれば、相手が暗号化に対応していない場合は
        接続自体を失敗させる(smb2_set_sealのコメント参照)。 */
     smb2_set_seal(ctx, requireEncryption ? 1 : 0);
-    if (url->user) {
-        smb2_set_user(ctx, url->user);
+    /* ユーザー名はURLに埋め込まれていない(url->userは常にNULL)ので、
+       別途渡された生のユーザー名をそのまま使う。%エスケープ等の変換は挟まない。 */
+    if ([username length] > 0) {
+        smb2_set_user(ctx, [username UTF8String]);
     }
     if ([password length] > 0) {
         smb2_set_password(ctx, [password UTF8String]);
