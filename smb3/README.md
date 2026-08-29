@@ -366,7 +366,10 @@ PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアッ�
 - v0.3のままv0.4(SMB3暗号化オプション)がリリースされたことにbarracuda156氏が気づき、
   「0.4に上げよう」と提案
 - ✅ [macos-powerpc/powerpc-ports#237](https://github.com/macos-powerpc/powerpc-ports/pull/237)
-  でv0.4へ追従済み(v0.5リリース後、追って追従予定)
+  でv0.4へ追従済み
+- ✅ v0.5へ追従: [macos-powerpc/powerpc-ports#238](https://github.com/macos-powerpc/powerpc-ports/pull/238)、マージ済み
+- ✅ v0.5のMakefile回帰(下記)を受けてv0.5.1へ追従:
+  [macos-powerpc/powerpc-ports#241](https://github.com/macos-powerpc/powerpc-ports/pull/241)
 
 ## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
 
