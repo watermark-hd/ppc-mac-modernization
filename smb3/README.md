@@ -410,3 +410,21 @@ smb2_set_authentication(ctx, SMB2_SEC_NTLMSSP);
 
 実機のiBookで再ビルドし、コンパイルが通ることを確認済み(接続確認はsaxfun氏の
 環境での再テスト待ち)。
+
+### v0.5→v0.5.1: 上のMakefile変更がLeopard/Snow Leopardのビルドを壊していた
+
+v0.5のこのfixと同時に、Makefileに`-isysroot /Developer/SDKs/MacOSX10.4u.sdk`への
+フォールバックを入れた。手元のiBookでOSアップデート後か何かのタイミングで
+システム側(`/System/Library/Frameworks`)のCocoaヘッダーが消えており、
+`Cocoa/Cocoa.h: No such file or directory`でビルドが通らなくなっていたための
+対処だったが、条件を「10.4u SDKが`/Developer/SDKs`に**存在すれば**使う」に
+してしまっていた。
+
+これが、Leopard/Snow Leopard上でシステム側のヘッダーが正常に揃っている環境でも
+無条件にSDKを掴んでしまう回帰バグになっていた。saxfun氏の環境(おそらくSnow
+Leopard)で`stdarg.h`/`float.h`が見つからないというビルドエラーとして表面化した。
+
+修正: 判定条件を「システム側の`Cocoa.h`が実際に見つからない場合に限って」
+SDKへフォールバックするよう変更(`ifeq ($(wildcard .../Cocoa.h),)`)。
+saxfun氏が最初にビルドできていた(`-isysroot`無しの素の`cc`)状態に戻しつつ、
+iBookでヘッダーが消えていた問題への対処も両立できる。

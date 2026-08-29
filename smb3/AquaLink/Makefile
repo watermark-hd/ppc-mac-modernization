@@ -16,13 +16,20 @@ LIBSMB2_A ?= $(firstword \
     $(wildcard $(LIBSMB2_DIR)/lib/.libs/libsmb2.a) \
     $(LIBSMB2_DIR)/lib/.libs/libsmb2.a)
 
-# システム側(/System/Library/Frameworks)のヘッダーがOSアップデート等で
-# 消えていても、/Developer/SDKs 配下のSDKヘッダーが残っていればそちらを
-# 使ってビルドできるようにする。SDKが見つからなければ何も足さず、
-# これまで通りシステム側のヘッダーに頼る。
+# システム側(/System/Library/Frameworks)のCocoaヘッダーが実際に見つかる場合は
+# 何もせず、今まで通りシステムのヘッダーをそのまま使う(大多数の環境ではこちら)。
+# SDKが/Developer/SDKsに「存在するかどうか」だけでは判定しない。存在していても、
+# 動いているOSやgccのバージョンと噛み合わない組み合わせだとヘッダーが引けず
+# ビルドが壊れる(例: Leopard/Snow LeopardでMacOSX10.4u.sdkを掴んでstdarg.hや
+# float.hが見つからないエラーになったケースが実際にあった)。
+# システム側のヘッダーが本当に無い場合(OSアップデート等で消えた等)に限って、
+# SDKへのフォールバックを試みる。
+ifeq ($(wildcard /System/Library/Frameworks/Cocoa.framework/Headers/Cocoa.h),)
 SDKROOT ?= $(firstword \
     $(wildcard /Developer/SDKs/MacOSX10.4u.sdk) \
-    $(wildcard /Developer/SDKs/MacOSX10.5.sdk))
+    $(wildcard /Developer/SDKs/MacOSX10.5.sdk) \
+    $(wildcard /Developer/SDKs/MacOSX10.6.sdk))
+endif
 
 CC ?= gcc
 CFLAGS += -std=gnu99 -Wall -fobjc-exceptions -I$(LIBSMB2_INC)
