@@ -368,8 +368,10 @@ PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアッ�
 - ✅ [macos-powerpc/powerpc-ports#237](https://github.com/macos-powerpc/powerpc-ports/pull/237)
   でv0.4へ追従済み
 - ✅ v0.5へ追従: [macos-powerpc/powerpc-ports#238](https://github.com/macos-powerpc/powerpc-ports/pull/238)、マージ済み
-- ✅ v0.5のMakefile回帰(下記)を受けてv0.5.1へ追従:
-  [macos-powerpc/powerpc-ports#241](https://github.com/macos-powerpc/powerpc-ports/pull/241)
+- v0.5のMakefile回帰(下記)を受けてv0.5.1へ追従するPRを送付
+  ([macos-powerpc/powerpc-ports#241](https://github.com/macos-powerpc/powerpc-ports/pull/241))、
+  マージ前にv0.5.1側のSMB2_SEC_NTLMSSP不具合(下記)も見つかったため、
+  同PRをレビュー待ちのままv0.5.2へ更新。レビュー待ち
 
 ## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
 
