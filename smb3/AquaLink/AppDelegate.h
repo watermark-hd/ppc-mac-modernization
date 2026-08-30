@@ -2,6 +2,23 @@
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
 
+/* smb2_set_authentication()自体はタグ付きリリース(libsmb2-6.2含む)の
+   libsmb2.hに公開されているが、その引数に渡すSMB2_SEC_*の値は
+   libsmb2-private.h(非公開ヘッダ)にしか定義されていない。この値が公開
+   ヘッダへ移動したのは2024-12のコミット(fbe9674)で、2026-08時点でどの
+   タグ付きリリースにもまだ含まれていない(masterのみ)。値自体は2019年の
+   導入(a148a80)以来変わっていない安定したABIなので、無ければここで
+   自前定義する。将来のリリースで公開ヘッダに入れば、この#ifndefにより
+   自動的に本家の定義を優先する。 */
+#ifndef SMB2_SEC_NTLMSSP
+enum smb2_sec_compat {
+    SMB2_SEC_UNDEFINED_COMPAT = 0,
+    SMB2_SEC_NTLMSSP_COMPAT = 1,
+    SMB2_SEC_KRB5_COMPAT = 2,
+};
+#define SMB2_SEC_NTLMSSP SMB2_SEC_NTLMSSP_COMPAT
+#endif
+
 @class WebDAVServer;
 @class LocalWebDAVServer;
 

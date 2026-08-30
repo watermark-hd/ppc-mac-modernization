@@ -431,3 +431,24 @@ Leopard)で`stdarg.h`/`float.h`が見つからないというビルドエラー�
 SDKへフォールバックするよう変更(`ifeq ($(wildcard .../Cocoa.h),)`)。
 saxfun氏が最初にビルドできていた(`-isysroot`無しの素の`cc`)状態に戻しつつ、
 iBookでヘッダーが消えていた問題への対処も両立できる。
+
+### v0.5.1→v0.5.2: `SMB2_SEC_NTLMSSP`がタグ付きリリースの公開ヘッダに無かった
+
+v0.5.1の修正でビルドは通るようになったが、saxfun氏の環境(PPCPortsの
+`libsmb2-6.2`)では今度は`AppDelegate.m:687: error: 'SMB2_SEC_NTLMSSP'
+undeclared`でコンパイル自体が失敗した。
+
+**原因はlibsmb2本体側の未リリースの穴だった。** `smb2_set_authentication()`
+関数自体はタグ付きリリース(`libsmb2-6.2`含む)の公開ヘッダ`libsmb2.h`に
+宣言されているが、その引数に渡す`enum smb2_sec`(`SMB2_SEC_NTLMSSP`等)の
+定義は非公開ヘッダ`libsmb2-private.h`にしかない。この`enum`が公開ヘッダへ
+移動したのはmaster上のコミット`fbe9674`(2024-12)だが、**2026-08時点で
+どのタグ付きリリースにもまだ含まれていない**。私自身の実機検証はmasterから
+直接ビルドしたlibsmb2で行っていたため、この穴に気づけなかった
+(タグ付きリリースを使う環境全てで同じエラーになるはず)。
+
+値自体は2019年の導入(`a148a80`)以来一度も変わっていない安定したABI
+(`SMB2_SEC_UNDEFINED=0, SMB2_SEC_NTLMSSP=1, SMB2_SEC_KRB5=2`)なので、
+`AppDelegate.h`側で`#ifndef SMB2_SEC_NTLMSSP`ガード付きの互換定義を追加した。
+masterベースでビルドした場合(本家の定義が既にある)は何もせず本家を優先し、
+タグ付きリリースの場合のみこちらの定義が使われる。
