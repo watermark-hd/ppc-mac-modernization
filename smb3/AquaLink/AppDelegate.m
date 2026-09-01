@@ -115,6 +115,8 @@ static NSDictionary *EnglishTranslations(void)
             @"Connection failed: Disconnected by the server mid-communication. This device may not support SMB2/3 (e.g. an older router's built-in sharing feature).\n(Details: %@)",
               UTF8("接続失敗: 通信の途中でサーバー側から切断されました。この機器がSMB2/3に対応していない可能性があります(古いルーター内蔵の共有機能など)。\n(詳細: %@)"),
             @"Connection failed: %@", UTF8("接続失敗: %@"),
+            @"Connection Failed", UTF8("接続に失敗しました"),
+            @"OK", UTF8("OK"),
             nil];
     }
     return table;
@@ -746,8 +748,20 @@ static NSString *FriendlyConnectError(NSString *raw)
 
 - (void)connectFailed:(NSString *)message
 {
+    /* statusLabelは高さ18pxの1行専用フィールドなので、FriendlyConnectError()が
+       返す「\n(詳細: ...)」付きの2行メッセージを渡しても、2行目は画面上に
+       全く表示されない(切れるのではなく、単純に見えなくなる)。詳細情報が
+       診断に必要な場面(saxfun氏からの報告で判明)なので、NSAlertでも
+       全文を出すようにする。 */
     [statusLabel setStringValue:message];
     [connectButton setEnabled:YES];
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:L("接続に失敗しました")];
+    [alert setInformativeText:message];
+    [alert addButtonWithTitle:L("OK")];
+    [alert runModal];
+    [alert release];
 }
 
 /* ============ ディレクトリ一覧 ============ */
