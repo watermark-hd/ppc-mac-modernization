@@ -49,7 +49,7 @@ static NSDictionary *EnglishTranslations(void)
             @"Share Name", UTF8("共有名"),
             @"Password", UTF8("パスワード"),
             @"Connect", UTF8("接続"),
-            @"Up", UTF8("上へ"),
+            @"▲ Up", UTF8("▲ 上へ"),
             @"Connect in Finder", UTF8("Finderに接続"),
             @"Share This Mac (as NAS)...", UTF8("このMacを共有(NAS化)..."),
             @"Name", UTF8("名前"),
@@ -481,7 +481,8 @@ static NSString *FriendlyConnectError(NSString *raw)
     [content addSubview:encryptCheckbox];
     [encryptCheckbox release];
 
-    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, oldH - 60, 480, 18)];
+    /* 「▲ 上へ」表記に伴いupButtonの幅を広げる分、ここを20px削って場所を空ける */
+    pathLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, oldH - 60, 460, 18)];
     [pathLabel setEditable:NO];
     [pathLabel setBezeled:NO];
     [pathLabel setDrawsBackground:NO];
@@ -490,16 +491,27 @@ static NSString *FriendlyConnectError(NSString *raw)
     [content addSubview:pathLabel];
     [pathLabel release];
 
-    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, oldH - 62, 50, 22)];
-    [upButton setTitle:L("上へ")];
+    /* 角丸ボタン(NSRoundedBezelStyle)は高さ22pxだと上辺の描画がフォントと
+       被って消える不具合が実機で確認された(connectButton等、高さ26pxの
+       ボタンでは発生しない)。他の正常なボタンに合わせて26pxにする。
+       見た目の中心がずれないよう、上下2pxずつ広げる形でy座標も調整 */
+    /* 「▲ 上へ」は「上へ」より長くなった分、幅を50→70pxに広げる。
+       mountButtonの位置(x=560)に触れないよう、左のpathLabel側を20px削って
+       場所を確保した(すぐ上のコメント参照) */
+    upButton = [[NSButton alloc] initWithFrame:NSMakeRect(470, oldH - 64, 70, 26)];
+    [upButton setTitle:L("▲ 上へ")];
     [upButton setBezelStyle:NSRoundedBezelStyle];
     [upButton setTarget:self];
     [upButton setAction:@selector(upAction:)];
+    /* Finderと同じ⌘+↑で「上の階層へ」を呼べるようにする。NSButtonのkeyEquivalent
+       機構をそのまま使うので、ボタンを直接クリックする操作と全く同じ経路を通る */
+    [upButton setKeyEquivalent:[NSString stringWithFormat:@"%C", (unichar)NSUpArrowFunctionKey]];
+    [upButton setKeyEquivalentModifierMask:NSCommandKeyMask];
     [upButton setAutoresizingMask:(NSViewMinXMargin | NSViewMinYMargin)];
     [content addSubview:upButton];
     [upButton release];
 
-    mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, oldH - 62, 130, 22)];
+    mountButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, oldH - 64, 130, 26)];
     [mountButton setTitle:L("Finderに接続")];
     [mountButton setBezelStyle:NSRoundedBezelStyle];
     [mountButton setTarget:self];
@@ -508,7 +520,7 @@ static NSString *FriendlyConnectError(NSString *raw)
     [content addSubview:mountButton];
     [mountButton release];
 
-    NSButton *shareSettingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, oldH - 92, 200, 22)];
+    NSButton *shareSettingsButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, oldH - 94, 200, 26)];
     [shareSettingsButton setTitle:L("このMacを共有(NAS化)...")];
     [shareSettingsButton setBezelStyle:NSRoundedBezelStyle];
     [shareSettingsButton setTarget:self];
@@ -784,6 +796,14 @@ static NSString *FriendlyConnectError(NSString *raw)
     while ((ent = smb2_readdir(smb2, dir)) != NULL) {
         NSString *name = [NSString stringWithUTF8String:ent->name];
         if ([name isEqualToString:@"."] || [name isEqualToString:@".."]) {
+            continue;
+        }
+        /* "."で始まるファイル(.DS_Store、.lesshst等のドットファイル全般)は
+           Finderの標準動作に合わせて一覧から隠す。.DS_Storeだけを個別に
+           除外していたら.lesshst等の他の隠しファイルが素通りしていたため、
+           プレフィックス判定に変更した。実データが消えるわけではなく、
+           あくまで表示上のフィルタ */
+        if ([name hasPrefix:@"."]) {
             continue;
         }
         BOOL isDir = (ent->st.smb2_type == SMB2_TYPE_DIRECTORY);
