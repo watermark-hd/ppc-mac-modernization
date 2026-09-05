@@ -373,7 +373,9 @@ PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアッ�
   マージ前にv0.5.1側のSMB2_SEC_NTLMSSP不具合(下記)も見つかったため、
   同PRをv0.5.2へ更新。✅ マージ済み
 - ✅ v0.5.3(エラーメッセージのUI表示不具合、下記)へ追従:
-  [macos-powerpc/powerpc-ports#255](https://github.com/macos-powerpc/powerpc-ports/pull/255)
+  [macos-powerpc/powerpc-ports#255](https://github.com/macos-powerpc/powerpc-ports/pull/255)、マージ済み
+- v0.5.4(フェーズA UI修正、下記)へ追従:
+  [macos-powerpc/powerpc-ports#267](https://github.com/macos-powerpc/powerpc-ports/pull/267)
 
 ## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
 
@@ -476,3 +478,33 @@ saxfun氏の報告だけでは根本原因を特定できずにいた。
 修正: `connectFailed:`で`NSAlert`のモーダルダイアログも表示し、複数行の
 詳細メッセージを確実に見せるようにした。実機のiBookでわざと接続を失敗させ、
 ダイアログに2行とも表示されることを確認済み。
+
+### v0.5.3→v0.5.4: ファイルブラウザ画面のUI修正(フェーズA)
+
+依頼者がiBookで日常的にAquaLinkを使う中で溜まっていたUIの引っかかりのうち、
+「小さく安全に直せるもの」をまとめて対処した。全て実機(iBook G4 / Tiger
+10.4.11)で確認済み。
+
+- **「上へ」ボタン** — 表記を`▲ Up` / `▲ 上へ`に変更。ブラウザの戻る/進むと
+  混同されやすかったため、「階層を上がる」動作であることを矢印で明示する。
+  あわせてFinderと同じ`⌘↑`(enclosing folder)のキーボードショートカットを
+  `setKeyEquivalent:`で追加。
+- **ラベルが伸びた分の幅調整** — `▲ 上へ`は`上へ`より長く、旧来の50px幅では
+  文字が横に切れた。`upButton`を50→70pxに拡げ、x座標を500→470へ、左隣の
+  `pathLabel`を480→460pxに詰めて場所を確保(`mountButton`の位置は不変)。
+- **角丸ボタンの上辺が消える不具合** — `NSRoundedBezelStyle`のボタンを高さ22pxで
+  作ると、上辺の線がフォント描画と被って見えなくなる(丸い側面と下線だけが
+  残る)。既に26pxで作っていて問題の出ていなかった`connectButton`に合わせ、
+  `upButton` / `mountButton` / `shareSettingsButton`を26pxへ統一。
+- **隠しファイルが一覧に出る** — 従来は`.DS_Store`だけを名指しで除外していたため
+  `.lesshst`等の他のドットファイルが素通りしていた。`listDirectory:`で
+  `hasPrefix:@"."`によるドットファイル全般の除外に変更。実データには触れない
+  表示上のフィルタ。
+
+**プロセス上の教訓:** この修正、一度目は「直っていない」と報告された。原因は
+コードではなく配置漏れ。iBookにソースをrsyncして`ssh ibook make`まではやって
+いたが、ビルドされた`~/developer/AquaLink/AquaLink.app`を`/Applications/`へ
+コピーしていなかった。iBookのDockは`/Applications/AquaLink.app`(8/28ビルドの
+v0.4のまま)を起動する設定で、そちらが更新されない限りユーザーには何も
+変わって見えない。**iBookでのビルド後は`cp -R ~/developer/AquaLink/AquaLink.app
+/Applications/`と、`Info.plist`のバージョン確認までを1セットにする。**
