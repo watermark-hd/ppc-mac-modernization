@@ -376,8 +376,9 @@ PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアッ�
   [macos-powerpc/powerpc-ports#255](https://github.com/macos-powerpc/powerpc-ports/pull/255)、マージ済み
 - ✅ v0.5.4(フェーズA UI修正、下記)へ追従:
   [macos-powerpc/powerpc-ports#267](https://github.com/macos-powerpc/powerpc-ports/pull/267)、マージ済み(barracuda156氏が承認・マージ)
-- v0.5.5(フェーズB ファイルブラウザ刷新、下記)へ追従:
+- v0.5.5(フェーズB ファイルブラウザ刷新)+ v0.5.6(ヘッダクリックでソート、下記)へ追従:
   [macos-powerpc/powerpc-ports#268](https://github.com/macos-powerpc/powerpc-ports/pull/268)
+  (v0.5.5で送ったPRを、マージ前にv0.5.6へ更新)
 
 ## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
 
@@ -532,5 +533,20 @@ v0.4のまま)を起動する設定で、そちらが更新されない限りユ
   システムフォントに統一。
 
 フォントサイズは可変にする案もあったが、標準サイズで「12〜13インチのノートに
-ちょうどいい」と評価されたため見送り。ヘッダクリックでのソートは未実装(任意で
-後日)。
+ちょうどいい」と評価されたため見送り。ヘッダクリックでのソートはv0.5.6で対応(下記)。
+
+### v0.5.5→v0.5.6: 列ヘッダクリックでソート
+
+フェーズBの積み残し。依頼者から「早いうちに」と要望。用途はファイルサイズ順に
+並べてRAW/JPG/メタデータの塊を分けたい、というもの(元カメラマン)。実機確認済み。
+
+- 列ヘッダをクリックすると 名前／サイズ／更新日時 でソート。同じ列を再クリックで
+  昇順↔降順。ソート中の列は`setHighlightedTableColumn:`でハイライトし、
+  `setIndicatorImage:`で▲▼を表示。
+- **フォルダは常に先頭にまとめる**ルールは方向反転の影響を受けない(降順でも
+  フォルダが下に落ちない)。キー同値のときは名前で決着させて表示順を安定化。
+- 起動時は 名前・昇順。ソート状態はセッション内のみ(再起動・フォルダ移動を
+  またいでの永続化はしない)。
+- 実装: `CompareEntries`を`EntrySortSpec`(keyKind/ascending)を受け取る形に変更。
+  `applyEntries`と新設のヘッダクリックハンドラは共に`-resortEntries`を通す。
+- ソート状態の永続化(NSUserDefaults)は今後の候補。
