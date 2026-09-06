@@ -374,8 +374,8 @@ PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアッ�
   同PRをv0.5.2へ更新。✅ マージ済み
 - ✅ v0.5.3(エラーメッセージのUI表示不具合、下記)へ追従:
   [macos-powerpc/powerpc-ports#255](https://github.com/macos-powerpc/powerpc-ports/pull/255)、マージ済み
-- v0.5.4(フェーズA UI修正、下記)へ追従:
-  [macos-powerpc/powerpc-ports#267](https://github.com/macos-powerpc/powerpc-ports/pull/267)
+- ✅ v0.5.4(フェーズA UI修正、下記)へ追従:
+  [macos-powerpc/powerpc-ports#267](https://github.com/macos-powerpc/powerpc-ports/pull/267)、マージ済み(barracuda156氏が承認・マージ)
 
 ## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
 
