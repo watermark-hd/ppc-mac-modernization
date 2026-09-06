@@ -376,6 +376,8 @@ PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアッ�
   [macos-powerpc/powerpc-ports#255](https://github.com/macos-powerpc/powerpc-ports/pull/255)、マージ済み
 - ✅ v0.5.4(フェーズA UI修正、下記)へ追従:
   [macos-powerpc/powerpc-ports#267](https://github.com/macos-powerpc/powerpc-ports/pull/267)、マージ済み(barracuda156氏が承認・マージ)
+- v0.5.5(フェーズB ファイルブラウザ刷新、下記)へ追従:
+  [macos-powerpc/powerpc-ports#268](https://github.com/macos-powerpc/powerpc-ports/pull/268)
 
 ## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
 
@@ -508,3 +510,27 @@ saxfun氏の報告だけでは根本原因を特定できずにいた。
 v0.4のまま)を起動する設定で、そちらが更新されない限りユーザーには何も
 変わって見えない。**iBookでのビルド後は`cp -R ~/developer/AquaLink/AquaLink.app
 /Applications/`と、`Info.plist`のバージョン確認までを1セットにする。**
+
+### v0.5.4→v0.5.5: ファイルブラウザ一覧をTransmit/Cyberduck寄りに刷新(フェーズB)
+
+フェーズAが表面的なボタン周りの修正だったのに対し、フェーズBは一覧そのものの
+作り直し。依頼者の「列の並びがFTPソフトより見づらい」「フォントが汚い」という
+評価が出発点。実機(iBook G4 / Tiger 10.4.11)で確認済み。
+
+- **アイコン** — 名前列の行頭にフォルダ/ファイルの16pxアイコンを出す。ファイルは
+  拡張子ごとに`[NSWorkspace iconForFileType:]`(jpg, txt 等)、フォルダは
+  `iconForFile:@"/Library"`(常に存在する素のフォルダ)。`NSTextFieldCell`を
+  削った小さな`ImageAndTextCell`(Appleのサンプルを10.4向けに縮小、`NSInteger`等の
+  10.5専用型は使わずTiger実物のシグネチャに合わせて`int`)で描画。行高18px。
+- **「種類」列を廃止** — フォルダ/ファイルの別はアイコンで分かるので冗長。
+- **「更新日時」列を追加** — `struct smb2_stat_64`の`smb2_mtime`を取得し、
+  `2026-09-06 | 14:32`形式で表示。日付と時刻の境目を`" | "`で区切る(素の空白より
+  読みやすい、という依頼者の指摘)。整形は10.4/10.5で挙動の割れる
+  `NSDateFormatter`を避け、`descriptionWithCalendarFormat:`を使用。
+- **レイアウト** — サイズ・更新日時は右寄せ＆固定幅、ウィンドウ拡大時に伸びるのは
+  名前列だけ(`NSTableViewFirstColumnOnlyAutoresizingStyle`)。全列で標準
+  システムフォントに統一。
+
+フォントサイズは可変にする案もあったが、標準サイズで「12〜13インチのノートに
+ちょうどいい」と評価されたため見送り。ヘッダクリックでのソートは未実装(任意で
+後日)。
