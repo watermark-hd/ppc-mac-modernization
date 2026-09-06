@@ -55,6 +55,7 @@ static NSDictionary *EnglishTranslations(void)
             @"Name", UTF8("名前"),
             @"Kind", UTF8("種類"),
             @"Size", UTF8("サイズ"),
+            @"Modified", UTF8("更新日時"),
             @"Not Connected", UTF8("未接続"),
             @"Connecting...", UTF8("接続中..."),
             @"Failed to initialize the SMB2 context", UTF8("smb2コンテキストの初期化に失敗しました"),
@@ -159,6 +160,99 @@ static NSString *FormatSize(unsigned long long size, BOOL isDir)
     }
     return [NSString stringWithFormat:@"%.1f GB", size / (1024.0 * 1024.0 * 1024.0)];
 }
+
+/* SMB2のmtime(1970年からの秒)を「2026-09-06 14:32」形式に整形する。
+   NSDateFormatterは10.4と10.5で挙動が異なるので、10.4から確実に使える
+   descriptionWithCalendarFormat:を使う(deprecated扱いだがTigerでは正常動作) */
+static NSString *FormatDate(unsigned long long mtime)
+{
+    if (mtime == 0) {
+        return @"";
+    }
+    NSDate *d = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)mtime];
+    /* 日付と時刻の境目が分かるよう " | " で区切る(依頼者の要望)。
+       "2026-09-06 | 14:32" のように出る */
+    return [d descriptionWithCalendarFormat:@"%Y-%m-%d | %H:%M"
+                                  timeZone:[NSTimeZone localTimeZone]
+                                    locale:nil];
+}
+
+/* 名前列用: 行頭に16pxのアイコンを描き、その右にファイル名を出すセル。
+   Cyberduck/Transmit風の一覧にするための最小実装(Appleのサンプル
+   ImageAndTextCellを10.4向けに削ったもの)。NSInteger等の10.5専用型は
+   使わず、Tigerの実際のメソッドシグネチャに合わせてintを使う。 */
+@interface ImageAndTextCell : NSTextFieldCell
+{
+    NSImage *iatImage;
+}
+- (void)setImage:(NSImage *)anImage;
+@end
+
+@implementation ImageAndTextCell
+
+- (void)dealloc
+{
+    [iatImage release];
+    [super dealloc];
+}
+
+- (id)copyWithZone:(NSZone *)zone
+{
+    ImageAndTextCell *c = (ImageAndTextCell *)[super copyWithZone:zone];
+    c->iatImage = [iatImage retain];
+    return c;
+}
+
+- (void)setImage:(NSImage *)anImage
+{
+    if (anImage != iatImage) {
+        [iatImage release];
+        iatImage = [anImage retain];
+    }
+}
+
+/* アイコン分だけ右にずらした、文字を描くための矩形 */
+- (NSRect)iatTitleRectForBounds:(NSRect)bounds
+{
+    if (iatImage == nil) {
+        return bounds;
+    }
+    float w = [iatImage size].width + 4;
+    NSRect r = bounds;
+    r.origin.x += w;
+    r.size.width -= w;
+    return r;
+}
+
+- (void)editWithFrame:(NSRect)aRect inView:(NSView *)controlView
+               editor:(NSText *)textObj delegate:(id)anObject event:(NSEvent *)theEvent
+{
+    [super editWithFrame:[self iatTitleRectForBounds:aRect] inView:controlView
+                  editor:textObj delegate:anObject event:theEvent];
+}
+
+- (void)selectWithFrame:(NSRect)aRect inView:(NSView *)controlView
+                 editor:(NSText *)textObj delegate:(id)anObject start:(int)selStart length:(int)selLength
+{
+    [super selectWithFrame:[self iatTitleRectForBounds:aRect] inView:controlView
+                    editor:textObj delegate:anObject start:selStart length:selLength];
+}
+
+- (void)drawWithFrame:(NSRect)cellFrame inView:(NSView *)controlView
+{
+    if (iatImage != nil) {
+        NSSize is = [iatImage size];
+        NSPoint p = cellFrame.origin;
+        p.x += 2;
+        p.y += (cellFrame.size.height - is.height) / 2.0;
+        [iatImage setFlipped:[controlView isFlipped]];
+        [iatImage drawAtPoint:p fromRect:NSZeroRect
+                    operation:NSCompositeSourceOver fraction:1.0];
+    }
+    [super drawWithFrame:[self iatTitleRectForBounds:cellFrame] inView:controlView];
+}
+
+@end
 
 /* ループバック以外の最初のIPv4アドレスを返す(LAN上の他機器に案内するURL用) */
 static NSString *GetLocalIPAddress(void)
@@ -541,26 +635,57 @@ static NSString *FriendlyConnectError(NSString *raw)
     [tableView setDoubleAction:@selector(rowDoubleClicked:)];
     [tableView setDraggingSourceOperationMask:NSDragOperationCopy forLocal:NO];
     [tableView registerForDraggedTypes:[NSArray arrayWithObject:NSFilenamesPboardType]];
+    /* アイコン(16px)と標準フォントが収まる行高。ウィンドウを広げたときは
+       名前列だけが伸びる(サイズ・更新日時は固定幅のまま) */
+    [tableView setRowHeight:18.0];
+    [tableView setColumnAutoresizingStyle:NSTableViewFirstColumnOnlyAutoresizingStyle];
 
+    NSFont *rowFont = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+
+    /* 名前列: 行頭にフォルダ/ファイルのアイコンを出す(Cyberduck/Transmit風)。
+       アイコンの出し分けはtableView:willDisplayCell:forTableColumn:row:で行う。 */
     NSTableColumn *nameCol = [[NSTableColumn alloc] initWithIdentifier:@"name"];
     [[nameCol headerCell] setStringValue:L("名前")];
-    [nameCol setWidth:340];
+    [nameCol setWidth:300];
+    [nameCol setMinWidth:120];
     /* 編集可能のままだとダブルクリックがフォルダを開かず名前変更モードに入ってしまうため */
     [nameCol setEditable:NO];
+    [nameCol setResizingMask:NSTableColumnUserResizingMask];
+    {
+        ImageAndTextCell *nameCell = [[ImageAndTextCell alloc] init];
+        [nameCell setFont:rowFont];
+        [nameCell setEditable:NO];
+        [nameCol setDataCell:nameCell];
+        [nameCell release];
+    }
     [tableView addTableColumn:nameCol];
     [nameCol release];
 
-    NSTableColumn *typeCol = [[NSTableColumn alloc] initWithIdentifier:@"type"];
-    [[typeCol headerCell] setStringValue:L("種類")];
-    [typeCol setWidth:100];
-    [tableView addTableColumn:typeCol];
-    [typeCol release];
-
+    /* サイズ列: 数字なので右寄せ。桁が揃って読みやすくなる */
     NSTableColumn *sizeCol = [[NSTableColumn alloc] initWithIdentifier:@"size"];
     [[sizeCol headerCell] setStringValue:L("サイズ")];
-    [sizeCol setWidth:100];
+    [[sizeCol headerCell] setAlignment:NSRightTextAlignment];
+    [sizeCol setWidth:80];
+    [sizeCol setMinWidth:60];
+    [sizeCol setEditable:NO];
+    [sizeCol setResizingMask:NSTableColumnUserResizingMask];
+    [[sizeCol dataCell] setFont:rowFont];
+    [[sizeCol dataCell] setAlignment:NSRightTextAlignment];
     [tableView addTableColumn:sizeCol];
     [sizeCol release];
+
+    /* 更新日時列: ファイル自体の最終更新日時(接続日時ではない) */
+    NSTableColumn *dateCol = [[NSTableColumn alloc] initWithIdentifier:@"date"];
+    [[dateCol headerCell] setStringValue:L("更新日時")];
+    [[dateCol headerCell] setAlignment:NSRightTextAlignment];
+    [dateCol setWidth:135];
+    [dateCol setMinWidth:115];
+    [dateCol setEditable:NO];
+    [dateCol setResizingMask:NSTableColumnUserResizingMask];
+    [[dateCol dataCell] setFont:rowFont];
+    [[dateCol dataCell] setAlignment:NSRightTextAlignment];
+    [tableView addTableColumn:dateCol];
+    [dateCol release];
 
     [scrollView setDocumentView:tableView];
     [tableView release];
@@ -811,6 +936,7 @@ static NSString *FriendlyConnectError(NSString *raw)
                             name, @"name",
                             [NSNumber numberWithBool:isDir], @"isDir",
                             [NSNumber numberWithUnsignedLongLong:ent->st.smb2_size], @"size",
+                            [NSNumber numberWithUnsignedLongLong:ent->st.smb2_mtime], @"mtime",
                             nil];
         [result addObject:e];
     }
@@ -919,12 +1045,56 @@ static NSString *FriendlyConnectError(NSString *raw)
 
     if ([identifier isEqualToString:@"name"]) {
         return [e objectForKey:@"name"];
-    } else if ([identifier isEqualToString:@"type"]) {
-        return isDir ? L("フォルダ") : L("ファイル");
     } else if ([identifier isEqualToString:@"size"]) {
         return FormatSize([[e objectForKey:@"size"] unsignedLongLongValue], isDir);
+    } else if ([identifier isEqualToString:@"date"]) {
+        return FormatDate([[e objectForKey:@"mtime"] unsignedLongLongValue]);
     }
     return @"";
+}
+
+/* 拡張子(フォルダの場合はnil)に対応する16pxアイコンを返す。
+   NSWorkspaceの戻り値は使い回されるので、リサイズする前にcopyして
+   拡張子ごとにキャッシュする(同じ一覧で何度も引かれるため) */
+static NSImage *IconForExtension(NSString *ext)
+{
+    static NSMutableDictionary *cache = nil;
+    if (cache == nil) {
+        cache = [[NSMutableDictionary alloc] init];
+    }
+    NSString *key = (ext != nil) ? ext : @"__folder__";
+    NSImage *icon = [cache objectForKey:key];
+    if (icon != nil) {
+        return icon;
+    }
+    NSWorkspace *ws = [NSWorkspace sharedWorkspace];
+    NSImage *src = (ext != nil)
+        ? [ws iconForFileType:ext]
+        : [ws iconForFile:@"/Library"];   /* 常に存在する素のフォルダ */
+    icon = [[src copy] autorelease];
+    [icon setSize:NSMakeSize(16.0, 16.0)];
+    if (icon != nil) {
+        [cache setObject:icon forKey:key];
+    }
+    return icon;
+}
+
+- (void)tableView:(NSTableView *)aTableView willDisplayCell:(id)aCell
+   forTableColumn:(NSTableColumn *)aTableColumn row:(int)rowIndex
+{
+    if (aTableView != tableView) {
+        return;
+    }
+    if (![[aTableColumn identifier] isEqualToString:@"name"]) {
+        return;
+    }
+    if (rowIndex < 0 || rowIndex >= (int)[entries count]) {
+        return;
+    }
+    NSDictionary *e = [entries objectAtIndex:rowIndex];
+    BOOL isDir = [[e objectForKey:@"isDir"] boolValue];
+    NSString *ext = isDir ? nil : [[e objectForKey:@"name"] pathExtension];
+    [aCell setImage:IconForExtension(ext)];
 }
 
 /* ============ ドラッグ&ドロップ(書き出しのみ。第1段) ============ */
