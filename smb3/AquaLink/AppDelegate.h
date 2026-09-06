@@ -45,7 +45,9 @@ enum smb2_sec_compat {
     NSString *currentShare;
     NSString *currentPath;    /* "" がルート。区切りは "/" */
 
-    NSMutableArray *entries;  /* 各要素は NSDictionary { name, isDir, size } */
+    NSMutableArray *entries;  /* 各要素は NSDictionary { name, isDir, size, mtime } */
+    NSString *sortColumnId;   /* 一覧のソート列 "name"/"size"/"date" */
+    BOOL sortAscending;       /* 昇順か */
 
     WebDAVServer *webdavServer;
     BOOL mounted;
@@ -110,6 +112,9 @@ enum smb2_sec_compat {
 - (void)navigateThread:(NSString *)path;
 - (void)listFailed:(NSString *)message;
 - (void)applyEntries:(NSDictionary *)payload;
+- (int)sortKeyKind;
+- (void)resortEntries;
+- (void)updateSortIndicators;
 - (void)rowDoubleClicked:(id)sender;
 - (BOOL)downloadRemotePath:(NSString *)remotePath toLocalPath:(NSString *)localPath;
 - (BOOL)uploadLocalPath:(NSString *)localPath toRemotePath:(NSString *)remotePath;

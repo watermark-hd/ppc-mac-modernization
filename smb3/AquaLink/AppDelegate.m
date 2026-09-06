@@ -135,15 +135,42 @@ static NSString *LocalizedString(const char *cstr)
     return en ? en : ja;
 }
 
-/* ディレクトリを先に、続いてファイル名の昇順でソートする比較関数 */
+/* 一覧のソート指定。keyKind: 0=名前 1=サイズ 2=更新日時 */
+typedef struct {
+    int keyKind;
+    BOOL ascending;
+} EntrySortSpec;
+
+/* ディレクトリは常に先頭にまとめ、その中で指定キー・方向に並べる比較関数。
+   キーが同値のときは名前で決着させる(表示順を安定させるため)。
+   フォルダ先頭のルールはascendingの影響を受けない(降順でもフォルダが上)。 */
 static int CompareEntries(id a, id b, void *context)
 {
+    EntrySortSpec def = { 0, YES };
+    EntrySortSpec *s = context ? (EntrySortSpec *)context : &def;
+
     BOOL aDir = [[a objectForKey:@"isDir"] boolValue];
     BOOL bDir = [[b objectForKey:@"isDir"] boolValue];
     if (aDir != bDir) {
         return aDir ? NSOrderedAscending : NSOrderedDescending;
     }
-    return [[a objectForKey:@"name"] caseInsensitiveCompare:[b objectForKey:@"name"]];
+
+    int r;
+    if (s->keyKind == 1) {
+        unsigned long long sa = [[a objectForKey:@"size"] unsignedLongLongValue];
+        unsigned long long sb = [[b objectForKey:@"size"] unsignedLongLongValue];
+        r = (sa < sb) ? NSOrderedAscending : (sa > sb) ? NSOrderedDescending : NSOrderedSame;
+    } else if (s->keyKind == 2) {
+        unsigned long long ma = [[a objectForKey:@"mtime"] unsignedLongLongValue];
+        unsigned long long mb = [[b objectForKey:@"mtime"] unsignedLongLongValue];
+        r = (ma < mb) ? NSOrderedAscending : (ma > mb) ? NSOrderedDescending : NSOrderedSame;
+    } else {
+        r = (int)[[a objectForKey:@"name"] caseInsensitiveCompare:[b objectForKey:@"name"]];
+    }
+    if (r == NSOrderedSame) {
+        r = (int)[[a objectForKey:@"name"] caseInsensitiveCompare:[b objectForKey:@"name"]];
+    }
+    return s->ascending ? r : -r;
 }
 
 static NSString *FormatSize(unsigned long long size, BOOL isDir)
@@ -391,6 +418,8 @@ static NSString *FriendlyConnectError(NSString *raw)
 - (void)applicationDidFinishLaunching:(NSNotification *)note
 {
     entries = [[NSMutableArray alloc] init];
+    sortColumnId = [@"name" retain];
+    sortAscending = YES;
     currentPath = [@"" retain];
     smb2Lock = [[NSLock alloc] init];
     mounted = NO;
@@ -687,6 +716,9 @@ static NSString *FriendlyConnectError(NSString *raw)
     [tableView addTableColumn:dateCol];
     [dateCol release];
 
+    /* 起動時は名前・昇順。ヘッダに▲を出しておく */
+    [self updateSortIndicators];
+
     [scrollView setDocumentView:tableView];
     [tableView release];
     [content addSubview:scrollView];
@@ -969,14 +1001,73 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSArray *result = [payload objectForKey:@"entries"];
     NSString *path = [payload objectForKey:@"path"];
 
-    NSArray *sorted = [result sortedArrayUsingFunction:CompareEntries context:NULL];
     [entries release];
-    entries = [sorted mutableCopy];
+    entries = [result mutableCopy];
+    [self resortEntries];
 
     [tableView reloadData];
     [pathLabel setStringValue:[NSString stringWithFormat:@"/%@/%@",
                                 (currentShare ? currentShare : @""), path]];
     [statusLabel setStringValue:[NSString stringWithFormat:L("%lu 件"), (unsigned long)[entries count]]];
+}
+
+/* ============ 一覧のソート(ヘッダクリック) ============ */
+
+- (int)sortKeyKind
+{
+    if ([sortColumnId isEqualToString:@"size"]) {
+        return 1;
+    }
+    if ([sortColumnId isEqualToString:@"date"]) {
+        return 2;
+    }
+    return 0;
+}
+
+- (void)resortEntries
+{
+    EntrySortSpec spec;
+    spec.keyKind = [self sortKeyKind];
+    spec.ascending = sortAscending;
+    [entries sortUsingFunction:CompareEntries context:&spec];
+}
+
+/* ソート中の列をハイライトし、▲▼のインジケータを付ける */
+- (void)updateSortIndicators
+{
+    NSArray *cols = [tableView tableColumns];
+    unsigned int i;
+    for (i = 0; i < [cols count]; i++) {
+        NSTableColumn *c = [cols objectAtIndex:i];
+        if ([[c identifier] isEqualToString:sortColumnId]) {
+            [tableView setHighlightedTableColumn:c];
+            [tableView setIndicatorImage:
+                [NSImage imageNamed:(sortAscending ? @"NSAscendingSortIndicator"
+                                                   : @"NSDescendingSortIndicator")]
+                           inTableColumn:c];
+        } else {
+            [tableView setIndicatorImage:nil inTableColumn:c];
+        }
+    }
+}
+
+- (void)tableView:(NSTableView *)aTableView didClickTableColumn:(NSTableColumn *)aTableColumn
+{
+    if (aTableView != tableView) {
+        return;
+    }
+    NSString *clicked = [aTableColumn identifier];
+    if ([clicked isEqualToString:sortColumnId]) {
+        /* 同じ列を再クリック → 昇順/降順を反転 */
+        sortAscending = !sortAscending;
+    } else {
+        [sortColumnId release];
+        sortColumnId = [clicked retain];
+        sortAscending = YES;
+    }
+    [self updateSortIndicators];
+    [self resortEntries];
+    [tableView reloadData];
 }
 
 - (void)rowDoubleClicked:(id)sender
@@ -2267,6 +2358,7 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 - (void)dealloc
 {
     [entries release];
+    [sortColumnId release];
     [currentServer release];
     [currentShare release];
     [currentPath release];
