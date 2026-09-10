@@ -91,6 +91,7 @@ enum smb2_sec_compat {
 - (void)loadBookmarks;
 - (void)addBookmarkWithAddress:(NSString *)address share:(NSString *)share username:(NSString *)username;
 - (void)autofillFromBookmarkAtIndex:(unsigned int)index;
+- (void)setAddressFieldValue:(NSString *)value;
 
 /* NSComboBox データソース(履歴 + Bonjourで見つけたサーバーの一覧表示に使用) */
 - (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox;

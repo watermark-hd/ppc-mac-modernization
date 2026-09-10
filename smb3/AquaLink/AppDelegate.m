@@ -1856,10 +1856,20 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     int nDiscovered = (int)[discoveredServices count];
     if (index < nDiscovered) {
         NSString *ip = [[discoveredServices objectAtIndex:index] objectForKey:@"address"];
-        [urlField setStringValue:(ip ? ip : @"")];
+        /* この通知の直後に、NSComboBox自身がテキスト欄を「表示文字列
+           (= 名前 — IP)」で上書きする。ここで即setStringValueしても打ち消される
+           ので、1ステップ遅らせてIPだけを入れ直す */
+        [self performSelector:@selector(setAddressFieldValue:)
+                   withObject:(ip ? ip : @"")
+                   afterDelay:0.0];
         return;
     }
     [self autofillFromBookmarkAtIndex:(unsigned int)(index - nDiscovered)];
+}
+
+- (void)setAddressFieldValue:(NSString *)value
+{
+    [urlField setStringValue:value];
 }
 
 /* ============ Bonjour(接続先の自動発見) ============ */
