@@ -380,11 +380,10 @@ PPCPortsの`aqua/aqualink` Portfileは、AquaLink本体のバージョンアッ�
   [macos-powerpc/powerpc-ports#268](https://github.com/macos-powerpc/powerpc-ports/pull/268)、マージ済み
 - ✅ v0.5.9(Bonjour接続先自動発見、下記)へ追従:
   [macos-powerpc/powerpc-ports#274](https://github.com/macos-powerpc/powerpc-ports/pull/274)、マージ済み
-- v0.5.10(マウント失敗ダイアログ + setuid検知、下記)へ追従:
-  ✅ [macos-powerpc/powerpc-ports#275](https://github.com/macos-powerpc/powerpc-ports/pull/275)、マージ済み
+- ✅ v0.5.10(マウント失敗ダイアログ + setuid検知、下記)へ追従:
+  [macos-powerpc/powerpc-ports#275](https://github.com/macos-powerpc/powerpc-ports/pull/275)、マージ済み
 - v0.5.11(編集メニュー + マウント後Finder表示、下記)へ追従:
   [macos-powerpc/powerpc-ports#276](https://github.com/macos-powerpc/powerpc-ports/pull/276)、レビュー待ち
-  (v0.5.5で送ったPRを、マージ前にv0.5.6へ更新した上でマージされた)
 
 ## 接続失敗「gss_acquire_cred: 不正な名前」✅ 解決(v0.5)
 
