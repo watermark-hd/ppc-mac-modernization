@@ -118,6 +118,13 @@ static NSDictionary *EnglishTranslations(void)
             @"Connection failed: %@", UTF8("接続失敗: %@"),
             @"Connection Failed", UTF8("接続に失敗しました"),
             @"OK", UTF8("OK"),
+            @"Edit", UTF8("編集"),
+            @"Undo", UTF8("取り消す"),
+            @"Redo", UTF8("やり直す"),
+            @"Cut", UTF8("カット"),
+            @"Copy", UTF8("コピー"),
+            @"Paste", UTF8("ペースト"),
+            @"Select All", UTF8("すべてを選択"),
             @"Connecting in Finder failed", UTF8("Finderへの接続に失敗しました"),
             @"Can't mount: /sbin/mount_webdav has lost its setuid (admin) bit. OS updates can strip it.\n\nRun this one line in Terminal, then try again:\nsudo chmod u+s /sbin/mount_webdav",
               UTF8("マウントできません: /sbin/mount_webdav に管理者権限(setuid)が付いていません。OSアップデート等で外れることがあります。\n\nターミナルで次を1行実行してから、もう一度お試しください:\nsudo chmod u+s /sbin/mount_webdav"),
@@ -502,6 +509,41 @@ static NSString *FriendlyConnectError(NSString *raw)
     [appMenu addItem:quitItem];
     [quitItem release];
     /* menubar / appMenuItem / appMenu はここでreleaseしない(意図的) */
+
+    /* 標準の「編集」メニュー。手組みのメニューバーだとこれが無く、テキスト欄で
+       ⌘C/⌘V/⌘X/⌘A/⌘Z が全く効かなかった(ダイアログのコマンドをコピーできない等)。
+       action の target は付けず(nil)、レスポンダチェーンでフォーカスのある
+       テキスト欄まで届くようにする(標準のcut:/copy:/paste:等) */
+    NSMenuItem *editMenuItem = [[NSMenuItem alloc] initWithTitle:L("編集")
+                                                         action:NULL keyEquivalent:@""];
+    NSMenu *editMenu = [[NSMenu alloc] initWithTitle:L("編集")];
+    [editMenuItem setSubmenu:editMenu];
+    [menubar addItem:editMenuItem];
+    /* appMenuと同様、editMenuItem/editMenuはここでreleaseしない(アプリの
+       生存期間中ずっと使うメニュー。上のappMenuのコメント参照) */
+    {
+        struct { NSString *title; SEL action; NSString *key; } items[] = {
+            { L("取り消す"),        @selector(undo:),      @"z" },
+            { L("やり直す"),        @selector(redo:),      @"Z" },
+            { nil,                  NULL,                  nil },
+            { L("カット"),          @selector(cut:),       @"x" },
+            { L("コピー"),          @selector(copy:),      @"c" },
+            { L("ペースト"),        @selector(paste:),     @"v" },
+            { L("すべてを選択"),    @selector(selectAll:), @"a" },
+        };
+        unsigned k;
+        for (k = 0; k < sizeof(items) / sizeof(items[0]); k++) {
+            if (items[k].title == nil) {
+                [editMenu addItem:[NSMenuItem separatorItem]];
+                continue;
+            }
+            NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:items[k].title
+                                                       action:items[k].action
+                                                keyEquivalent:items[k].key];
+            [editMenu addItem:mi];
+            [mi release];
+        }
+    }
 
     /* タイトル・中身が全て確定してから最後にインストールする。
        menubarが既存のものを流用したケースでも、念のため毎回呼び直して反映を確実にする */
@@ -1587,6 +1629,14 @@ static NSImage *IconForExtension(NSString *ext)
     [statusLabel setStringValue:message];
     [mountButton setEnabled:YES];
     [mountButton setTitle:(mounted ? L("取り外す") : L("Finderに接続"))];
+
+    /* マウント成功時は、そのボリュームをFinderで開いて見せる。
+       「接続しました」と出ても何が起きたか分からない、Finder環境設定次第では
+       デスクトップ/サイドバーにアイコンも出ない、という声を受けての対応。
+       これでマウント先(このiBook上の/Volumes/共有名)が確実に目に見える。 */
+    if (mounted && mountPointPath != nil) {
+        [[NSWorkspace sharedWorkspace] openFile:mountPointPath];
+    }
 }
 
 - (void)unmountAction:(id)sender
