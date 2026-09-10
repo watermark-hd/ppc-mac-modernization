@@ -55,6 +55,11 @@ enum smb2_sec_compat {
 
     NSMutableArray *bookmarks; /* 接続に成功したsmb://URLの履歴。新しい順、最大10件 */
 
+    /* --- Bonjour(接続先の自動発見) --- */
+    NSNetServiceBrowser *serviceBrowser;
+    NSMutableArray *discoveredServices; /* 各要素 NSDictionary { name, address } 解決済みのSMBサーバー */
+    NSMutableArray *pendingResolves;    /* resolve中のNSNetService。解決/失敗まで参照を保持する */
+
     /* --- このMacを共有する(NAS化)機能 --- */
     NSWindow *shareWindow;
     NSTableView *shareFolderTable;
@@ -87,9 +92,15 @@ enum smb2_sec_compat {
 - (void)addBookmarkWithAddress:(NSString *)address share:(NSString *)share username:(NSString *)username;
 - (void)autofillFromBookmarkAtIndex:(unsigned int)index;
 
-/* NSComboBox データソース(履歴の一覧表示に使用) */
+/* NSComboBox データソース(履歴 + Bonjourで見つけたサーバーの一覧表示に使用) */
 - (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox;
 - (id)comboBox:(NSComboBox *)aComboBox objectValueForItemAtIndex:(int)index;
+
+/* Bonjour(接続先の自動発見)デリゲート */
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser didFindService:(NSNetService *)service moreComing:(BOOL)moreComing;
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser didRemoveService:(NSNetService *)service moreComing:(BOOL)moreComing;
+- (void)netServiceDidResolveAddress:(NSNetService *)service;
+- (void)netService:(NSNetService *)service didNotResolve:(NSDictionary *)errorDict;
 
 /* --- このMacを共有する(NAS化)機能 --- */
 - (void)showShareWindow:(id)sender;

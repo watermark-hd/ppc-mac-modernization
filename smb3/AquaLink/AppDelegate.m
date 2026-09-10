@@ -204,6 +204,30 @@ static NSString *FormatDate(unsigned long long mtime)
                                     locale:nil];
 }
 
+/* NSNetServiceのaddresses(struct sockaddrを包んだNSDataの配列)から、
+   最初のIPv4アドレスを "192.168.x.x" 形式の文字列で返す。無ければnil。
+   ホスト名(service.hostName)ではなく数値IPをそのまま使うのは、環境によって
+   名前解決自体が壊れているケースがあるため(実際にそういう報告があった)。
+   数値IPで繋げば名前解決を一切通らない */
+static NSString *AQFirstIPv4FromNetService(NSNetService *service)
+{
+    NSArray *addrs = [service addresses];
+    unsigned i;
+    for (i = 0; i < [addrs count]; i++) {
+        NSData *data = [addrs objectAtIndex:i];
+        const struct sockaddr *sa = (const struct sockaddr *)[data bytes];
+        if (sa != NULL && sa->sa_family == AF_INET &&
+                [data length] >= sizeof(struct sockaddr_in)) {
+            const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+            char buf[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf)) != NULL) {
+                return [NSString stringWithUTF8String:buf];
+            }
+        }
+    }
+    return nil;
+}
+
 /* 名前列用: 行頭に16pxのアイコンを描き、その右にファイル名を出すセル。
    Cyberduck/Transmit風の一覧にするための最小実装(Appleのサンプル
    ImageAndTextCellを10.4向けに削ったもの)。NSInteger等の10.5専用型は
@@ -736,6 +760,16 @@ static NSString *FriendlyConnectError(NSString *raw)
     [window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
+    /* --- Bonjour: LAN上のSMB共有(_smb._tcp)を探し、アドレス欄のプルダウンに
+       候補として出す。Finderの「ネットワーク」を開くとNASが出てくる、あの体験の
+       代わり。IPアドレスを知らない人でも繋げるようにするのが狙い。
+       見つけたサーバーは解決して数値IPにしてから候補に載せる(名前解決を通さない) */
+    discoveredServices = [[NSMutableArray alloc] init];
+    pendingResolves = [[NSMutableArray alloc] init];
+    serviceBrowser = [[NSNetServiceBrowser alloc] init];
+    [serviceBrowser setDelegate:self];
+    [serviceBrowser searchForServicesOfType:@"_smb._tcp." inDomain:@"local."];
+
     [self autoStartSharingIfConfigured];
 }
 
@@ -769,6 +803,12 @@ static NSString *FriendlyConnectError(NSString *raw)
         smb2_disconnect_share(smb2);
         smb2_destroy_context(smb2);
         smb2 = NULL;
+    }
+    if (serviceBrowser != nil) {
+        [serviceBrowser stop];
+        [serviceBrowser setDelegate:nil];
+        [serviceBrowser release];
+        serviceBrowser = nil;
     }
 }
 
@@ -1778,26 +1818,103 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 
 /* ============ NSComboBox データソース/デリゲート ============ */
 
+/* プルダウンの中身は「Bonjourで見つけたサーバー(上)」+「接続履歴(下)」の並び。
+   discoveredServicesの件数を境目にして、index未満なら発見サーバー、以上なら履歴。 */
+
 - (int)numberOfItemsInComboBox:(NSComboBox *)aComboBox
 {
-    return (int)[bookmarks count];
+    return (int)([discoveredServices count] + [bookmarks count]);
 }
 
 - (id)comboBox:(NSComboBox *)aComboBox objectValueForItemAtIndex:(int)index
 {
-    if (index < 0 || index >= (int)[bookmarks count]) {
-        return @"";
+    int nDiscovered = (int)[discoveredServices count];
+    if (index >= 0 && index < nDiscovered) {
+        NSDictionary *svc = [discoveredServices objectAtIndex:index];
+        /* 「名前 — IPアドレス」の形で見せる。選ばれた時はIP部分だけ取り出して使う */
+        return [NSString stringWithFormat:@"%@  —  %@",
+                  [svc objectForKey:@"name"], [svc objectForKey:@"address"]];
     }
-    return [[bookmarks objectAtIndex:index] objectForKey:@"address"];
+    int bIndex = index - nDiscovered;
+    if (bIndex >= 0 && bIndex < (int)[bookmarks count]) {
+        return [[bookmarks objectAtIndex:bIndex] objectForKey:@"address"];
+    }
+    return @"";
 }
 
-/* 履歴のプルダウンから選ぶと、アドレスだけでなく共有名・ユーザー名・パスワードも
-   まとめて埋める */
+/* プルダウンから選んだ時の挙動。
+   - Bonjourで見つけたサーバー: アドレス欄にIPだけ入れる(共有名・ユーザー名は
+     分からないので触らない。利用者が続けて入力する)
+   - 接続履歴: アドレス・共有名・ユーザー名・パスワードまでまとめて埋める */
 - (void)comboBoxSelectionDidChange:(NSNotification *)notification
 {
     int index = [urlField indexOfSelectedItem];
-    if (index >= 0) {
-        [self autofillFromBookmarkAtIndex:(unsigned int)index];
+    if (index < 0) {
+        return;
+    }
+    int nDiscovered = (int)[discoveredServices count];
+    if (index < nDiscovered) {
+        NSString *ip = [[discoveredServices objectAtIndex:index] objectForKey:@"address"];
+        [urlField setStringValue:(ip ? ip : @"")];
+        return;
+    }
+    [self autofillFromBookmarkAtIndex:(unsigned int)(index - nDiscovered)];
+}
+
+/* ============ Bonjour(接続先の自動発見) ============ */
+
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser
+           didFindService:(NSNetService *)service
+               moreComing:(BOOL)moreComing
+{
+    /* 見つけた時点では名前しか分からない。数値IPを得るためresolveする。
+       完了までNSNetServiceが解放されないよう配列で保持しておく */
+    [service setDelegate:self];
+    [pendingResolves addObject:service];
+    [service resolveWithTimeout:5.0];
+}
+
+- (void)netServiceDidResolveAddress:(NSNetService *)service
+{
+    NSString *ip = AQFirstIPv4FromNetService(service);
+    if (ip != nil) {
+        BOOL exists = NO;
+        unsigned i;
+        for (i = 0; i < [discoveredServices count]; i++) {
+            if ([[[discoveredServices objectAtIndex:i] objectForKey:@"name"]
+                    isEqualToString:[service name]]) {
+                exists = YES;
+                break;
+            }
+        }
+        if (!exists) {
+            NSDictionary *entry = [NSDictionary dictionaryWithObjectsAndKeys:
+                                     [service name], @"name",
+                                     ip, @"address", nil];
+            [discoveredServices addObject:entry];
+            [urlField reloadData];
+        }
+    }
+    [pendingResolves removeObject:service];
+}
+
+- (void)netService:(NSNetService *)service didNotResolve:(NSDictionary *)errorDict
+{
+    [pendingResolves removeObject:service];
+}
+
+- (void)netServiceBrowser:(NSNetServiceBrowser *)browser
+         didRemoveService:(NSNetService *)service
+               moreComing:(BOOL)moreComing
+{
+    unsigned i;
+    for (i = 0; i < [discoveredServices count]; i++) {
+        if ([[[discoveredServices objectAtIndex:i] objectForKey:@"name"]
+                isEqualToString:[service name]]) {
+            [discoveredServices removeObjectAtIndex:i];
+            [urlField reloadData];
+            break;
+        }
     }
 }
 

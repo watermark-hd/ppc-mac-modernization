@@ -550,3 +550,26 @@ v0.4のまま)を起動する設定で、そちらが更新されない限りユ
 - 実装: `CompareEntries`を`EntrySortSpec`(keyKind/ascending)を受け取る形に変更。
   `applyEntries`と新設のヘッダクリックハンドラは共に`-resortEntries`を通す。
 - ソート状態の永続化(NSUserDefaults)は今後の候補。
+
+### v0.5.6→v0.5.7: Bonjourで接続先を自動発見(フェーズC 項目1)
+
+依頼者が最重視していた機能。「ほとんどの人はNASのIPアドレスなんて知らない」
+「PC名も個人PCだと当てにならない(本名のまま/hotmailのまま/謎のデフォルト)」
+という問題意識。Finderで「ネットワーク」を開くとNASが出てくる、あの体験を
+アドレス欄のプルダウンで代替する。
+
+- `NSNetServiceBrowser`(10.2以降)で`_smb._tcp.`を`local.`ドメインでブラウズ。
+  `applicationDidFinishLaunching:`で開始し、`applicationWillTerminate:`で停止。
+- 見つけた`NSNetService`は`resolveWithTimeout:5.0`で解決し、`addresses`から
+  **最初のIPv4アドレスを数値のまま**取り出して候補に載せる(`AQFirstIPv4FromNetService`)。
+  `hostName`を使わないのは、環境によって名前解決自体が壊れているため
+  (saxfun氏のケース。数値IPなら名前解決を一切通らない)。
+- アドレス欄のNSComboBoxのプルダウンは「発見したサーバー(上)」+「接続履歴(下)」
+  の並びに変更。`discoveredServices`の件数を境目にして`numberOfItemsInComboBox:`
+  /`comboBox:objectValueForItemAtIndex:`/`comboBoxSelectionDidChange:`を分岐。
+- 発見サーバーはプルダウンで「名前  —  192.168.x.x」と表示し、選ぶとアドレス欄に
+  **IPだけ**を入れる(共有名・ユーザー名はBonjourでは分からないので触らない)。
+- resolve中の`NSNetService`は`pendingResolves`配列で参照を保持(解決/失敗まで
+  解放されないように)。サービスが消えたら`didRemoveService`で候補からも外す。
+- デリゲートのコールバックはメイン実行ループ(=メインスレッド)で来るので
+  `[urlField reloadData]`を直接呼んで問題ない。
