@@ -141,6 +141,7 @@ enum smb2_sec_compat {
 
 - (void)doMount;
 - (void)mountFinishedWithMessage:(NSString *)message;
+- (void)mountFailed:(NSString *)message;
 - (void)unmountAction:(id)sender;
 - (void)doUnmount;
 - (BOOL)runUnmountCommand:(NSString *)mountPoint force:(BOOL)force;

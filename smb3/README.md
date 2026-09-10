@@ -586,3 +586,19 @@ v0.4のまま)を起動する設定で、そちらが更新されない限りユ
   解放されないように)。サービスが消えたら`didRemoveService`で候補からも外す。
 - デリゲートのコールバックはメイン実行ループ(=メインスレッド)で来るので
   `[urlField reloadData]`を直接呼んで問題ない。
+
+### v0.5.9→v0.5.10: マウント失敗をダイアログで見せる + setuid剥がれの検知
+
+依頼者が実機で「Finderに接続」を押しても何も起きない、と報告。原因はiBookの
+`/sbin/mount_webdav`からsetuidビットが剥がれていたこと(`-r-xr-xr-x`。本来は
+`-r-sr-xr-x`)。OSアップデートやメンテナンスで剥がれることがあり、saxfun氏が
+プロジェクト初期に踏んだのと同じ問題。`sudo chmod u+s /sbin/mount_webdav`で復旧。
+
+AquaLink側の対応:
+- **マウント失敗を`NSAlert`でも出す。** これまでは下部のステータス欄に小さく
+  出るだけで、「押しても何も起きない」と受け取られていた。v0.5.3で接続失敗を
+  ダイアログ化したのと同じ扱い。`doMount`の失敗経路は`mountFinishedWithMessage:`
+  ではなく新設の`mountFailed:`(ステータス欄 + NSAlert、クリックできるOKボタン)へ。
+- **`mount_webdav`のsetuidビットを実行前に確認。** 無ければ実際のマウントは試みず、
+  「ターミナルで `sudo chmod u+s /sbin/mount_webdav` を実行してください」という
+  具体的な復旧手順をダイアログで案内する(`NSFilePosixPermissions`の`04000`を見る)。

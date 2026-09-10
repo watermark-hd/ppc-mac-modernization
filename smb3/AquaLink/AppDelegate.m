@@ -118,6 +118,9 @@ static NSDictionary *EnglishTranslations(void)
             @"Connection failed: %@", UTF8("接続失敗: %@"),
             @"Connection Failed", UTF8("接続に失敗しました"),
             @"OK", UTF8("OK"),
+            @"Connecting in Finder failed", UTF8("Finderへの接続に失敗しました"),
+            @"Can't mount: /sbin/mount_webdav has lost its setuid (admin) bit. OS updates can strip it.\n\nRun this one line in Terminal, then try again:\nsudo chmod u+s /sbin/mount_webdav",
+              UTF8("マウントできません: /sbin/mount_webdav に管理者権限(setuid)が付いていません。OSアップデート等で外れることがあります。\n\nターミナルで次を1行実行してから、もう一度お試しください:\nsudo chmod u+s /sbin/mount_webdav"),
             nil];
     }
     return table;
@@ -1475,6 +1478,22 @@ static NSImage *IconForExtension(NSString *ext)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
+    /* /sbin/mount_webdav はroot権限が必要で、通常はsetuidされているため一般
+       ユーザーでも実行できる。ところがOSアップデートやメンテナンスでsetuidビットが
+       剥がれることがあり(実際に複数の環境で発生)、そうなるとマウントが必ず失敗する。
+       原因が分かりにくいので、実行前にビットの有無を確認し、無ければ具体的な
+       復旧コマンドを案内して打ち切る。 */
+    NSDictionary *mwAttrs = [[NSFileManager defaultManager]
+                                fileAttributesAtPath:@"/sbin/mount_webdav" traverseLink:YES];
+    unsigned long mwPerm = [[mwAttrs objectForKey:NSFilePosixPermissions] unsignedLongValue];
+    if (mwAttrs != nil && (mwPerm & 04000) == 0) {
+        [self performSelectorOnMainThread:@selector(mountFailed:)
+            withObject:L("マウントできません: /sbin/mount_webdav に管理者権限(setuid)が付いていません。OSアップデート等で外れることがあります。\n\nターミナルで次を1行実行してから、もう一度お試しください:\nsudo chmod u+s /sbin/mount_webdav")
+            waitUntilDone:NO];
+        [pool release];
+        return;
+    }
+
     webdavServer = [[WebDAVServer alloc] initWithAppDelegate:self];
     int p = 8090;
     BOOL started = NO;
@@ -1490,7 +1509,7 @@ static NSImage *IconForExtension(NSString *ext)
     if (!started) {
         [webdavServer release];
         webdavServer = nil;
-        [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
+        [self performSelectorOnMainThread:@selector(mountFailed:)
                                 withObject:L("WebDAVサーバーの起動に失敗しました")
                              waitUntilDone:NO];
         [pool release];
@@ -1539,10 +1558,28 @@ static NSImage *IconForExtension(NSString *ext)
         webdavServer = nil;
     }
 
-    [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
+    [self performSelectorOnMainThread:(success ? @selector(mountFinishedWithMessage:)
+                                              : @selector(mountFailed:))
                             withObject:resultMessage
                          waitUntilDone:NO];
     [pool release];
+}
+
+/* マウント失敗時。接続失敗(connectFailed:)と同じく、下部のステータス欄だけだと
+   見落とされる(実際に「押しても何も起きない」と受け取られた)ので、NSAlertでも
+   全文を出す。ボタンはクリックできる「OK」。 */
+- (void)mountFailed:(NSString *)message
+{
+    [statusLabel setStringValue:message];
+    [mountButton setEnabled:YES];
+    [mountButton setTitle:L("Finderに接続")];
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:L("Finderへの接続に失敗しました")];
+    [alert setInformativeText:message];
+    [alert addButtonWithTitle:L("OK")];
+    [alert runModal];
+    [alert release];
 }
 
 - (void)mountFinishedWithMessage:(NSString *)message
