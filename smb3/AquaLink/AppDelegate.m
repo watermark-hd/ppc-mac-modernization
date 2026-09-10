@@ -1831,8 +1831,9 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     int nDiscovered = (int)[discoveredServices count];
     if (index >= 0 && index < nDiscovered) {
         NSDictionary *svc = [discoveredServices objectAtIndex:index];
-        /* 「名前 — IPアドレス」の形で見せる。選ばれた時はIP部分だけ取り出して使う */
-        return [NSString stringWithFormat:@"%@  —  %@",
+        /* 「名前 — IPアドレス」の形で見せる。選ばれた時はIP部分だけ取り出して使う。
+           区切りの「—」は @"..." 直書きだと古いgccで文字化けするのでUTF8()で組む */
+        return [NSString stringWithFormat:UTF8("%@  —  %@"),
                   [svc objectForKey:@"name"], [svc objectForKey:@"address"]];
     }
     int bIndex = index - nDiscovered;
