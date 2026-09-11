@@ -47,6 +47,16 @@ AquaLink does two things:
 
 As far as we know, this is the first working SMB2/3 client for PowerPC Mac OS X.
 
+Connecting doesn't require knowing an IP address, either. AquaLink discovers SMB3
+servers on the LAN over Bonjour — NAS boxes, and any Mac or PC with file sharing
+turned on — and lists them right in the address field's dropdown; picking one fills
+in the address for you. Most people don't actually know their NAS's IP, and a
+personal computer's advertised name is rarely any more useful (still the factory
+default, or some name nobody remembers choosing). It's a small feature, but it's
+also the point of the whole project: a 20-year-old Mac that can just find things on
+today's network on its own, instead of needing an address memorized and typed by
+hand — one more way it gets to sit at the same table as the machines it's talking to.
+
 AquaLink now supports SMB3 encryption, including an option to require it
 end-to-end (a checkbox on the connect screen). Building this surfaced a real
 byte-order bug in libsmb2 itself — the SMB3 encryption header's SessionId
