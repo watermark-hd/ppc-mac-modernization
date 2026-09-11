@@ -41,16 +41,25 @@ LDFLAGS += -framework Cocoa -framework Security
 
 OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o
 
+# 「取り外す」がGUIの管理者権限ダイアログでは失敗する環境向けの、setuid root
+# ヘルパー(詳細はaqualink-umount-helper.cとsmb3/README.md参照)。Cocoaに
+# 依存しないただのCプログラムなので、アプリ本体と別にビルドしてResourcesへ置く。
+HELPER = aqualink-umount-helper
+
 all: $(APPBUNDLE)
 
 RESOURCES = $(CONTENTS)/Resources
 
-$(APPBUNDLE): $(MACOS)/$(APPNAME) Info.plist $(APPNAME).icns
+$(APPBUNDLE): $(MACOS)/$(APPNAME) Info.plist $(APPNAME).icns $(RESOURCES)/$(HELPER)
 	mkdir -p $(CONTENTS)
 	mkdir -p $(RESOURCES)
 	cp Info.plist $(CONTENTS)/Info.plist
 	cp $(APPNAME).icns $(RESOURCES)/$(APPNAME).icns
 	printf 'APPL????' > $(CONTENTS)/PkgInfo
+
+$(RESOURCES)/$(HELPER): $(HELPER).c
+	mkdir -p $(RESOURCES)
+	$(CC) -std=gnu99 -Wall -o $@ $(HELPER).c
 
 $(MACOS)/$(APPNAME): $(OBJS) $(LIBSMB2_A)
 	mkdir -p $(MACOS)
@@ -60,6 +69,6 @@ $(MACOS)/$(APPNAME): $(OBJS) $(LIBSMB2_A)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -rf $(OBJS) $(APPBUNDLE)
+	rm -rf $(OBJS) $(APPBUNDLE) $(HELPER)
 
 .PHONY: all clean

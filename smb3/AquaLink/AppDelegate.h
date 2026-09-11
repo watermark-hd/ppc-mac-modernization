@@ -140,11 +140,18 @@ enum smb2_sec_compat {
 - (BOOL)isConnected;
 
 - (void)doMount;
+- (void)resyncMountedStateFromGroundTruth;
+- (void)mountSucceededWithMessage:(NSString *)message;
 - (void)mountFinishedWithMessage:(NSString *)message;
 - (void)mountFailed:(NSString *)message;
 - (void)unmountAction:(id)sender;
 - (void)doUnmount;
+- (void)refreshFinderVolumeIconsAskingIfNeeded;
+- (BOOL)ensureUmountHelperSetuidWithPrompt;
+- (void)ensureUmountHelperSetuidWithPromptInto:(NSMutableArray *)resultHolder;
+- (BOOL)restorePrivilegedUmountHelperSetuid:(NSString **)outErrorMessage;
 - (BOOL)runUnmountCommand:(NSString *)mountPoint force:(BOOL)force;
 - (BOOL)runPrivilegedUnmount:(NSString *)mountPoint errorMessage:(NSString **)outErrorMessage;
+- (BOOL)restorePrivilegedMountWebdavSetuid:(NSString **)outErrorMessage;
 
 @end

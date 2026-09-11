@@ -8,11 +8,17 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/wait.h>
+#include <sys/param.h>
+#include <sys/mount.h>
 #include <Security/Security.h>
 
 /* NSString版sprintfの単純な置換ヘルパー(定義は本ファイル下部)。前方宣言。 */
 static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *replacement);
+/* applicationWillTerminate: (本ファイル前方)がマウントの後始末に使うため、
+   定義(後方、Finderマウント節)より前で前方宣言しておく */
+static BOOL AQTeardownMountPoint(NSString *mountPoint);
 
 /* 古いgcc(4.0系)はObjective-Cの @"..." 日本語リテラルを正しく解釈しないことがあるため、
    C文字列(生バイト列、コンパイラによる再解釈なし)からUTF-8として明示的に組み立てる */
@@ -126,8 +132,19 @@ static NSDictionary *EnglishTranslations(void)
             @"Paste", UTF8("ペースト"),
             @"Select All", UTF8("すべてを選択"),
             @"Connecting in Finder failed", UTF8("Finderへの接続に失敗しました"),
-            @"Can't mount: /sbin/mount_webdav has lost its setuid (admin) bit. OS updates can strip it.\n\nRun this one line in Terminal, then try again:\nsudo chmod u+s /sbin/mount_webdav",
-              UTF8("マウントできません: /sbin/mount_webdav に管理者権限(setuid)が付いていません。OSアップデート等で外れることがあります。\n\nターミナルで次を1行実行してから、もう一度お試しください:\nsudo chmod u+s /sbin/mount_webdav"),
+            @"Mount setup needed", UTF8("マウントの準備が必要です"),
+            @"/sbin/mount_webdav has lost its setuid (admin) bit. OS updates can strip it. To put it back the way it should be, this will run the following as administrator:\n\nchmod u+s /sbin/mount_webdav",
+              UTF8("/sbin/mount_webdav に管理者権限(setuid)が付いていません。OSアップデート等で外れることがあります。本来あるべき状態に戻すため、次のコマンドを管理者権限で実行します:\n\nchmod u+s /sbin/mount_webdav"),
+            @"Fix it automatically", UTF8("自動で直す"),
+            @"Cancel", UTF8("キャンセル"),
+            @"Automatic fix failed", UTF8("自動修復に失敗しました"),
+            @"%@\n\nYou can also fix it by hand. Run this one line in Terminal:\nsudo chmod u+s /sbin/mount_webdav",
+              UTF8("%@\n\n手動でも直せます。ターミナルで次を1行実行してください:\nsudo chmod u+s /sbin/mount_webdav"),
+            @"Could not restore the setuid bit", UTF8("setuidビットの復元に失敗しました"),
+            @"No free mount point found. There may be a stale mount left under /Volumes. Try: sudo umount -f /Volumes/<share>",
+              UTF8("マウント先の空きが見つかりません。/Volumes に古いマウントが残っている可能性があります。ターミナルで sudo umount -f /Volumes/共有名 を試してください。"),
+            @"Mount failed: no response (timed out). Check for a stale mount left under /Volumes.",
+              UTF8("マウント失敗: 応答がありません(タイムアウト)。/Volumes に古いマウントが残っていないか確認してください。"),
             nil];
     }
     return table;
@@ -816,6 +833,14 @@ static NSString *FriendlyConnectError(NSString *raw)
     [serviceBrowser searchForServicesOfType:@"_smb._tcp." inDomain:@"local."];
 
     [self autoStartSharingIfConfigured];
+
+    /* アプリがアクティブになるたび(Dockクリック・⌘Tab復帰等)に、実際の
+       マウント状態を確認して「取り外す」ボタンのずれを直す。Finderから
+       直接取り出された場合などにボタンだけが残る不具合の保険。 */
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                              selector:@selector(resyncMountedStateFromGroundTruth)
+                                                  name:NSApplicationDidBecomeActiveNotification
+                                                object:nil];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app
@@ -827,12 +852,10 @@ static NSString *FriendlyConnectError(NSString *raw)
 {
     /* マウント中に何も考えずWebDAVサーバーを止めると、OS側はマウントされたままだと
        思い込んだ「壊れたマウント」が残ってしまう(実際に発生した不具合)。
-       終了処理でも必ず先にOSレベルの取り外しを試みてからサーバーを止める。 */
-    if (mounted && mountPointPath != nil) {
-        BOOL ok = [self runUnmountCommand:mountPointPath force:NO];
-        if (!ok) {
-            [self runUnmountCommand:mountPointPath force:YES];
-        }
+       終了処理でも必ず先にマウントの後始末(mount_webdav kill + umount -f)をしてから
+       サーバーを止める。ここが不完全だと、アプリ終了だけでマシンが固まる。 */
+    if (mountPointPath != nil) {
+        AQTeardownMountPoint(mountPointPath);
     }
     if (webdavServer != nil) {
         [webdavServer stop];
@@ -1501,8 +1524,332 @@ static NSImage *IconForExtension(NSString *ext)
 
 /* ============ Finderへのマウント(第2段) ============ */
 
+/* pathが今まさにマウントポイントの直上(そこがボリュームのルート)かどうか。
+   statfsのf_mntonnameがpath自身と一致すればマウントポイント。 */
+static BOOL AQIsMountPoint(NSString *path)
+{
+    struct statfs sfs;
+    if (statfs([path fileSystemRepresentation], &sfs) != 0) {
+        return NO;
+    }
+    return (strcmp(sfs.f_mntonname, [path fileSystemRepresentation]) == 0);
+}
+
+/* /Volumes/<base> が既にマウント済みなら /Volumes/<base>-2, -3 ... と空いている名前を探す。
+   Finder自身も共有名が衝突すると同じことをする。見つからなければnil。 */
+static NSString *AQAvailableMountPoint(NSString *base)
+{
+    NSString *p = [@"/Volumes" stringByAppendingPathComponent:base];
+    if (!AQIsMountPoint(p)) {
+        return p;
+    }
+    int i;
+    for (i = 2; i <= 20; i++) {
+        NSString *cand = [@"/Volumes" stringByAppendingPathComponent:
+                             [NSString stringWithFormat:@"%@-%d", base, i]];
+        if (!AQIsMountPoint(cand)) {
+            return cand;
+        }
+    }
+    return nil;
+}
+
+/* 指定のマウントポイントを引数に持つ mount_webdav プロセスを SIGKILL する。
+   mount_webdav は setuid root だが「実UID」は起動ユーザーのままなので、同じ実UIDの
+   このプロセスから kill(2) が通る(サーバーが応答しなくなって固まった mount_webdav を
+   確実に始末するための手段)。umount より先にこれをやると、以後の umount -f が
+   ほぼ確実に成功する。 */
+static void AQKillMountWebdavAt(NSString *mountPoint)
+{
+    NSTask *ps = [[NSTask alloc] init];
+    [ps setLaunchPath:@"/bin/ps"];
+    [ps setArguments:[NSArray arrayWithObjects:@"-axww", @"-o", @"pid=,command=", nil]];
+    NSPipe *pipe = [NSPipe pipe];
+    [ps setStandardOutput:pipe];
+    [ps setStandardError:[NSPipe pipe]];
+    NSData *out = nil;
+    @try {
+        [ps launch];
+        out = [[pipe fileHandleForReading] readDataToEndOfFile];
+        [ps waitUntilExit];
+    }
+    @catch (NSException *ex) { }
+    [ps release];
+    if (out == nil) {
+        return;
+    }
+    NSString *s = [[[NSString alloc] initWithData:out encoding:NSUTF8StringEncoding] autorelease];
+    NSEnumerator *lines = [[s componentsSeparatedByString:@"\n"] objectEnumerator];
+    NSString *line;
+    while ((line = [lines nextObject])) {
+        if ([line rangeOfString:@"mount_webdav"].location == NSNotFound) {
+            continue;
+        }
+        if ([line rangeOfString:mountPoint].location == NSNotFound) {
+            continue;
+        }
+        int pid = [line intValue]; /* 行頭のpid */
+        if (pid > 1) {
+            kill(pid, SIGKILL);
+        }
+    }
+}
+
+/* umount(必要なら -f)を、指定秒でタイムアウトしながら実行する。
+   固まった WebDAV マウントに対して素の umount がハングすることがあるため、
+   waitUntilExit ではなくポーリングし、時間切れなら SIGKILL する。
+   戻り値: 実行後に mountPoint がマウントポイントでなくなっていれば YES。 */
+static BOOL AQRunUmount(NSString *mountPoint, BOOL force, double timeoutSec)
+{
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/sbin/umount"];
+    [task setArguments:(force
+        ? [NSArray arrayWithObjects:@"-f", mountPoint, nil]
+        : [NSArray arrayWithObjects:mountPoint, nil])];
+    [task setStandardOutput:[NSPipe pipe]];
+    [task setStandardError:[NSPipe pipe]];
+    @try {
+        [task launch];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSec];
+        while ([task isRunning] && [deadline timeIntervalSinceNow] > 0) {
+            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+        }
+        if ([task isRunning]) {
+            kill([task processIdentifier], SIGKILL);
+            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+        }
+    }
+    @catch (NSException *ex) { }
+    [task release];
+    /* 成否は terminationStatus ではなく「実際に外れたか」で判断する */
+    return !AQIsMountPoint(mountPoint);
+}
+
+/* 開いているFinderウィンドウの数を、osascriptを子プロセスとして起動して尋ねる
+   (NSAppleScriptではなくNSTask経由にしているのは、この関数がバックグラウンド
+   スレッドから呼ばれることもあるため。スレッドを問わず安全に使えるNSTaskで
+   統一する)。判定できなければ-1を返す(安全側に倒すため「開いている扱い」
+   として使う)。 */
+static int AQFinderOpenWindowCount(void)
+{
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/usr/bin/osascript"];
+    [task setArguments:[NSArray arrayWithObjects:@"-e",
+                            @"tell application \"Finder\" to count windows", nil]];
+    NSPipe *pipe = [NSPipe pipe];
+    [task setStandardOutput:pipe];
+    [task setStandardError:[NSPipe pipe]];
+    NSData *out = nil;
+    @try {
+        [task launch];
+        out = [[pipe fileHandleForReading] readDataToEndOfFile];
+        [task waitUntilExit];
+    }
+    @catch (NSException *ex) {
+        [task release];
+        return -1;
+    }
+    [task release];
+    if (out == nil || [out length] == 0) {
+        return -1;
+    }
+    NSString *s = [[[NSString alloc] initWithData:out encoding:NSUTF8StringEncoding] autorelease];
+    return [s intValue];
+}
+
+static void AQKillallFinder(void)
+{
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:@"/usr/bin/killall"];
+    [task setArguments:[NSArray arrayWithObject:@"Finder"]];
+    [task setStandardOutput:[NSPipe pipe]];
+    [task setStandardError:[NSPipe pipe]];
+    @try {
+        [task launch];
+    }
+    @catch (NSException *ex) { }
+    [task release];
+}
+
+/* 生のumount(2)(setuidヘルパー・ターミナルのsudo umount共通)はDiskArbitration
+   経由の通知を出さないため、デスクトップ/サイドバーのボリュームアイコンが
+   実体消滅後も残ってしまう(実機で確認済み)。NSWorkspaceの
+   noteFileSystemChanged:も試したが効果が無かった(実機で確認済み)。
+   Finder自身を再起動する(killall Finder)以外に実機で効く手段が無かった。
+   ★ただし、複数のFinderウィンドウを開いて中身を見比べている最中に
+   問答無用で再起動すると、その作業を丸ごと中断させてしまう(実際に指摘を
+   受けた懸念)。開いているウィンドウが無ければ黙って直す。ウィンドウが
+   ある(または判定できない)時は、無断で閉じずに本人に確認する
+   (AppDelegateの-refreshFinderVolumeIconsAskingIfNeededへ)。 */
+static void AQRefreshFinderVolumeIcons(void)
+{
+    if (AQFinderOpenWindowCount() == 0) {
+        AQKillallFinder();
+        return;
+    }
+    [(id)[NSApp delegate] performSelectorOnMainThread:@selector(refreshFinderVolumeIconsAskingIfNeeded)
+                                            withObject:nil
+                                         waitUntilDone:NO];
+}
+
+/* mountPointに残った空ディレクトリを片付ける(中身があれば触らない=
+   /Volumes直下の実フォルダを誤って消さない) */
+static void AQCleanupEmptyMountDir(NSString *mountPoint)
+{
+    if (mountPoint == nil || AQIsMountPoint(mountPoint)) {
+        return;
+    }
+    NSArray *contents = [[NSFileManager defaultManager] directoryContentsAtPath:mountPoint];
+    if (contents != nil && [contents count] == 0) {
+        rmdir([mountPoint fileSystemRepresentation]);
+        AQRefreshFinderVolumeIcons();
+    }
+}
+
+/* マウントポイントを「普通に」外す。umount → umount -f の順でタイムアウト付きで
+   試す。★ここでは絶対に mount_webdav を先にkillしない。実機で確認済み:
+   生きているデーモンとの協調が無いと、その後どれだけ強くumountを試しても
+   (root権限でも)綺麗に外れなくなる。中途半端に「早く外そう」とkillを混ぜるのは
+   逆効果で、この方式(何もkillしない)が一番確実だった。
+   戻り値: 実行後に mountPoint がマウントポイントでなくなっていれば YES。 */
+static BOOL AQTeardownMountPoint(NSString *mountPoint)
+{
+    if (mountPoint == nil) {
+        return YES;
+    }
+    if (AQIsMountPoint(mountPoint)) {
+        AQRunUmount(mountPoint, NO, 10.0);
+    }
+    if (AQIsMountPoint(mountPoint)) {
+        AQRunUmount(mountPoint, YES, 10.0);
+    }
+    BOOL clear = !AQIsMountPoint(mountPoint);
+    if (clear) {
+        AQCleanupEmptyMountDir(mountPoint);
+    }
+    return clear;
+}
+
+/* まだ一度も成立していない(失敗/タイムアウトした)マウント「試行」を諦めて
+   片付ける専用。doMountの失敗経路だけから呼ぶこと。守るべき成功済みマウントが
+   まだ無いので、ここでは mount_webdav をSIGKILLしても実害が無い
+   (AQTeardownMountPointと違い、これは既存の生きたマウントには絶対に使わない)。 */
+static BOOL AQAbandonFailedMountAttempt(NSString *mountPoint)
+{
+    if (mountPoint == nil) {
+        return YES;
+    }
+    AQKillMountWebdavAt(mountPoint);
+    [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+    BOOL clear = AQTeardownMountPoint(mountPoint);
+    if (!clear) {
+        AQCleanupEmptyMountDir(mountPoint);
+    }
+    return clear;
+}
+
+/* アプリに同梱したsetuid rootヘルパー(aqualink-umount-helper。詳細は
+   その.cファイルとsmb3/README.md参照)へのパス。アプリバンドルの外に出ても
+   困らないよう、実行中のバンドル自身から探す。 */
+static NSString *AQUmountHelperPath(void)
+{
+    return [[NSBundle mainBundle] pathForResource:@"aqualink-umount-helper" ofType:nil];
+}
+
+/* ヘルパーが「root所有 かつ setuidビット付き」になっているか。両方揃って
+   初めて実行時にroot権限で動く(所有者がwatermarkのままだとsetuidを立てても
+   watermark権限にしかならない)。 */
+static BOOL AQUmountHelperHasSetuid(void)
+{
+    NSString *path = AQUmountHelperPath();
+    if (path == nil) {
+        return NO; /* 同梱されていない(古いビルド等) */
+    }
+    NSDictionary *a = [[NSFileManager defaultManager] fileAttributesAtPath:path traverseLink:YES];
+    if (a == nil) {
+        return NO;
+    }
+    BOOL isRoot = ([[a objectForKey:NSFileOwnerAccountID] unsignedLongValue] == 0);
+    BOOL setuid = (([[a objectForKey:NSFilePosixPermissions] unsignedLongValue] & 04000) != 0);
+    return isRoot && setuid;
+}
+
+/* setuid rootヘルパーを使って、パスワードダイアログを一切出さずにumountする
+   (helperPathは実行時にroot所有・setuid付きになっている前提。呼ぶ前に
+   AQUmountHelperHasSetuid()で確認しておくこと)。ハング対策はAQRunUmountと
+   同じ、ポーリング+タイムアウト+SIGKILL。
+   戻り値: 実行後にmountPointがマウントポイントでなくなっていればYES。 */
+static BOOL AQRunPrivilegedHelperUmount(NSString *mountPoint, double timeoutSec)
+{
+    NSString *helperPath = AQUmountHelperPath();
+    if (helperPath == nil) {
+        return !AQIsMountPoint(mountPoint);
+    }
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:helperPath];
+    [task setArguments:[NSArray arrayWithObject:mountPoint]];
+    [task setStandardOutput:[NSPipe pipe]];
+    [task setStandardError:[NSPipe pipe]];
+    @try {
+        [task launch];
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSec];
+        while ([task isRunning] && [deadline timeIntervalSinceNow] > 0) {
+            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+        }
+        if ([task isRunning]) {
+            kill([task processIdentifier], SIGKILL);
+            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+        }
+    }
+    @catch (NSException *ex) { }
+    [task release];
+    return !AQIsMountPoint(mountPoint);
+}
+
+/* /sbin/mount_webdav にsetuidビットが付いているか。付いていないと一般ユーザーでは
+   マウントできない(OSアップデート等で剥がれることがある) */
+static BOOL AQMountWebdavHasSetuid(void)
+{
+    NSDictionary *a = [[NSFileManager defaultManager]
+                          fileAttributesAtPath:@"/sbin/mount_webdav" traverseLink:YES];
+    if (a == nil) {
+        return YES; /* 取得できないなら判定しない(そのまま実行を試す) */
+    }
+    return ([[a objectForKey:NSFilePosixPermissions] unsignedLongValue] & 04000) != 0;
+}
+
+/* 実際のマウント状態を後から確認し、内部状態(mounted)とボタン表示を現実に
+   合わせ直す。Finderのサイドバーから直接「取り出す」を選んだ場合や、今回の
+   ようにSSH等アプリの外からumountされた場合、AquaLink自身の取り外し処理
+   (doUnmount)を一度も通らないため、mountedフラグが古いままになり、実際には
+   何も残っていないのに「取り外す」ボタンだけが表示され続けてしまう
+   (実機で確認された不具合)。ボタンを押す直前と、アプリがアクティブに
+   なった直後に呼んで、ずれていれば直す。 */
+- (void)resyncMountedStateFromGroundTruth
+{
+    if (!mounted || mountPointPath == nil) {
+        return;
+    }
+    if (AQIsMountPoint(mountPointPath)) {
+        return; /* 実際にまだマウントされている。合っているので何もしない */
+    }
+    if (webdavServer != nil) {
+        [webdavServer stop];
+        [webdavServer release];
+        webdavServer = nil;
+    }
+    AQCleanupEmptyMountDir(mountPointPath);
+    [mountPointPath release];
+    mountPointPath = nil;
+    mounted = NO;
+    [mountButton setEnabled:YES];
+    [mountButton setTitle:L("Finderに接続")];
+    [statusLabel setStringValue:L("取り外し済みでした(Finder等で先に取り外された可能性があります)")];
+}
+
 - (void)mountAction:(id)sender
 {
+    [self resyncMountedStateFromGroundTruth];
     if (mounted) {
         [self unmountAction:sender];
         return;
@@ -1511,6 +1858,36 @@ static NSImage *IconForExtension(NSString *ext)
         [statusLabel setStringValue:L("先に接続してください")];
         return;
     }
+
+    /* /sbin/mount_webdav のsetuidビットが剥がれていると、この後のマウントは必ず
+       失敗する。原因が分かりにくいので、実行前にここで確認し、剥がれていたら
+       「自動で直す」ボタン付きのダイアログを出す。押せば管理者権限で
+       `chmod u+s /sbin/mount_webdav`(本来あるべき状態に戻すだけ)を代行する。 */
+    if (!AQMountWebdavHasSetuid()) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:L("マウントの準備が必要です")];
+        [alert setInformativeText:L("/sbin/mount_webdav に管理者権限(setuid)が付いていません。OSアップデート等で外れることがあります。本来あるべき状態に戻すため、次のコマンドを管理者権限で実行します:\n\nchmod u+s /sbin/mount_webdav")];
+        [alert addButtonWithTitle:L("自動で直す")];
+        [alert addButtonWithTitle:L("キャンセル")];
+        int resp = [alert runModal];
+        [alert release];
+        if (resp != NSAlertFirstButtonReturn) {
+            return;
+        }
+        NSString *err = nil;
+        if (![self restorePrivilegedMountWebdavSetuid:&err]) {
+            NSAlert *a2 = [[NSAlert alloc] init];
+            [a2 setMessageText:L("自動修復に失敗しました")];
+            [a2 setInformativeText:[NSString stringWithFormat:
+                L("%@\n\n手動でも直せます。ターミナルで次を1行実行してください:\nsudo chmod u+s /sbin/mount_webdav"),
+                (err ? err : @"")]];
+            [a2 addButtonWithTitle:L("OK")];
+            [a2 runModal];
+            [a2 release];
+            return;
+        }
+    }
+
     [mountButton setEnabled:NO];
     [statusLabel setStringValue:L("Finderに接続中...")];
     [NSThread detachNewThreadSelector:@selector(doMount) toTarget:self withObject:nil];
@@ -1519,22 +1896,6 @@ static NSImage *IconForExtension(NSString *ext)
 - (void)doMount
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-
-    /* /sbin/mount_webdav はroot権限が必要で、通常はsetuidされているため一般
-       ユーザーでも実行できる。ところがOSアップデートやメンテナンスでsetuidビットが
-       剥がれることがあり(実際に複数の環境で発生)、そうなるとマウントが必ず失敗する。
-       原因が分かりにくいので、実行前にビットの有無を確認し、無ければ具体的な
-       復旧コマンドを案内して打ち切る。 */
-    NSDictionary *mwAttrs = [[NSFileManager defaultManager]
-                                fileAttributesAtPath:@"/sbin/mount_webdav" traverseLink:YES];
-    unsigned long mwPerm = [[mwAttrs objectForKey:NSFilePosixPermissions] unsignedLongValue];
-    if (mwAttrs != nil && (mwPerm & 04000) == 0) {
-        [self performSelectorOnMainThread:@selector(mountFailed:)
-            withObject:L("マウントできません: /sbin/mount_webdav に管理者権限(setuid)が付いていません。OSアップデート等で外れることがあります。\n\nターミナルで次を1行実行してから、もう一度お試しください:\nsudo chmod u+s /sbin/mount_webdav")
-            waitUntilDone:NO];
-        [pool release];
-        return;
-    }
 
     webdavServer = [[WebDAVServer alloc] initWithAppDelegate:self];
     int p = 8090;
@@ -1559,7 +1920,20 @@ static NSImage *IconForExtension(NSString *ext)
     }
 
     NSString *mountName = ([currentShare length] > 0) ? currentShare : @"NAS";
-    NSString *mountPoint = [NSString stringWithFormat:@"/Volumes/%@", mountName];
+    /* 同名のマウントが既に残っていると、その場所へ再度mount_webdavしようとして
+       ハングする(前セッションのマウントが外れずに残っていた実例あり)。
+       Finder同様、空いている `/Volumes/<名前>-2` 等を探して使う。 */
+    NSString *mountPoint = AQAvailableMountPoint(mountName);
+    if (mountPoint == nil) {
+        [webdavServer stop];
+        [webdavServer release];
+        webdavServer = nil;
+        [self performSelectorOnMainThread:@selector(mountFailed:)
+            withObject:L("マウント先の空きが見つかりません。/Volumes に古いマウントが残っている可能性があります。ターミナルで sudo umount -f /Volumes/共有名 を試してください。")
+            waitUntilDone:NO];
+        [pool release];
+        return;
+    }
     [[NSFileManager defaultManager] createDirectoryAtPath:mountPoint attributes:nil];
 
     NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d/", [webdavServer port]];
@@ -1573,14 +1947,40 @@ static NSImage *IconForExtension(NSString *ext)
 
     NSString *resultMessage = nil;
     BOOL success = NO;
+    BOOL timedOut = NO;
     @try {
         [task launch];
-        [task waitUntilExit];
-        success = ([task terminationStatus] == 0);
+        /* mount_webdav が万一固まっても永久に待たないよう、25秒で打ち切る。
+           waitUntilExit の代わりにポーリングする。 */
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:25.0];
+        while ([task isRunning] && [deadline timeIntervalSinceNow] > 0) {
+            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
+        }
+        if ([task isRunning]) {
+            /* terminate(SIGTERM)ではmount_webdavが死なないことがあるので直接SIGKILL。
+               実UIDが同じなので届く。 */
+            kill([task processIdentifier], SIGKILL);
+            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+            timedOut = YES;
+            resultMessage = L("マウント失敗: 応答がありません(タイムアウト)");
+            success = NO;
+        } else {
+            success = ([task terminationStatus] == 0);
+        }
     }
     @catch (NSException *ex) {
         resultMessage = [NSString stringWithFormat:L("マウント失敗: %@"), [ex reason]];
         success = NO;
+    }
+
+    /* 「成功」と言っていても本当にマウントできているか最終確認する。
+       mount_webdav が終了コード0で戻りつつ実際にはマウントできていない、
+       という半端な状態を弾く。 */
+    if (success && !AQIsMountPoint(mountPoint)) {
+        success = NO;
+        if (resultMessage == nil) {
+            resultMessage = L("マウント失敗: マウントが完了しませんでした");
+        }
     }
 
     if (success) {
@@ -1592,15 +1992,24 @@ static NSImage *IconForExtension(NSString *ext)
         NSString *errStr = [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease];
         resultMessage = [NSString stringWithFormat:L("マウント失敗: %@"), (errStr ? errStr : @"")];
     }
+    (void)timedOut;
     [task release];
 
     if (!success) {
+        /* 失敗した時は、サーバーを止める *前に* 必ずマウント試行の後始末をする。
+           半端に張られたマウント + mount_webdav を残したままサーバーを止めると、
+           カーネルが応答の来ないHTTPを永久に待ち、/Volumes 全体(Finder/Dock含む)が
+           固まる。順序が命。まだ成立していない試行を諦めるだけなので、
+           mount_webdavをkillしても実害は無い(成功済みマウントには絶対に使わない
+           AQAbandonFailedMountAttemptを使う。AQTeardownMountPointとの違いは
+           コメント参照)。 */
+        AQAbandonFailedMountAttempt(mountPoint);
         [webdavServer stop];
         [webdavServer release];
         webdavServer = nil;
     }
 
-    [self performSelectorOnMainThread:(success ? @selector(mountFinishedWithMessage:)
+    [self performSelectorOnMainThread:(success ? @selector(mountSucceededWithMessage:)
                                               : @selector(mountFailed:))
                             withObject:resultMessage
                          waitUntilDone:NO];
@@ -1624,19 +2033,27 @@ static NSImage *IconForExtension(NSString *ext)
     [alert release];
 }
 
+/* マウント成功時。ステータス・ボタンを更新し、そのボリュームをFinderで開いて見せる。
+   「接続しました」と出ても何が起きたか分からない、Finder環境設定次第では
+   デスクトップ/サイドバーにアイコンも出ない、という声を受けての対応。
+   ★アンマウント経路からは呼ばない(失敗した取り外しでフォルダが再オープンされる
+   のを防ぐため、マウント成功専用にした)。 */
+- (void)mountSucceededWithMessage:(NSString *)message
+{
+    [statusLabel setStringValue:message];
+    [mountButton setEnabled:YES];
+    [mountButton setTitle:L("取り外す")];
+    if (mountPointPath != nil) {
+        [[NSWorkspace sharedWorkspace] openFile:mountPointPath];
+    }
+}
+
+/* 取り外し(成否問わず)の結果表示。ここではFinderを開かない。 */
 - (void)mountFinishedWithMessage:(NSString *)message
 {
     [statusLabel setStringValue:message];
     [mountButton setEnabled:YES];
     [mountButton setTitle:(mounted ? L("取り外す") : L("Finderに接続"))];
-
-    /* マウント成功時は、そのボリュームをFinderで開いて見せる。
-       「接続しました」と出ても何が起きたか分からない、Finder環境設定次第では
-       デスクトップ/サイドバーにアイコンも出ない、という声を受けての対応。
-       これでマウント先(このiBook上の/Volumes/共有名)が確実に目に見える。 */
-    if (mounted && mountPointPath != nil) {
-        [[NSWorkspace sharedWorkspace] openFile:mountPointPath];
-    }
 }
 
 - (void)unmountAction:(id)sender
@@ -1650,32 +2067,53 @@ static NSImage *IconForExtension(NSString *ext)
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
-    BOOL unmountOK = NO;
+    NSString *mp = [[mountPointPath retain] autorelease];
     NSString *privilegedError = nil;
 
-    if (mountPointPath != nil) {
-        /* まず通常のumountを試し、失敗したら-fで強制する。
-           OSレベルの取り外しが本当に成功したかどうかをterminationStatusで確認してから
-           WebDAVサーバーを止める。ここを確認せずにサーバーだけ止めると、OS側は
-           マウントされたままなのに応答するサーバーが無い「壊れたマウント」になり、
-           以後 /Volumes へのアクセス全体がハングする(実際に発生した不具合)。 */
-        unmountOK = [self runUnmountCommand:mountPointPath force:NO];
-        if (!unmountOK) {
-            unmountOK = [self runUnmountCommand:mountPointPath force:YES];
+    /* まず標準の後始末(mount_webdavをkill → umount → umount -f、いずれもタイムアウト付き。
+       最後に「本当に外れたか」をstatfsで確認)。ここを terminationStatus ではなく
+       実際の状態で判定するのが肝。半端に外れたと誤認してサーバーを止めると、
+       応答の来ないマウントが残って /Volumes 全体(Finder/Dock含む)が固まる。 */
+    BOOL unmountOK = AQTeardownMountPoint(mp);
+
+    if (!unmountOK && mp != nil) {
+        /* 一部の環境では、マウントがroot所有として扱われ、一般ユーザー権限の
+           umountが "Operation not permitted" で拒否される(実機で確認済み)。
+           次の一手は、GUIのパスワードダイアログ(runPrivilegedUnmount:)ではなく、
+           同梱のsetuid rootヘルパー(aqualink-umount-helper)を直接叩く方法。
+           GUIダイアログ経由のroot権限は、マウントしたのと別セッション扱いに
+           なるらしく同じ"Operation not permitted"で失敗することが実機で判明した
+           一方、mount_webdav自身と同じ「setuidで直接fork/exec」した権限なら
+           成功することも確認済み(smb3/README.md参照)。ヘルパーの初回準備だけは
+           管理者パスワードが要るので、メインスレッドに同期で確認してもらう。 */
+        NSMutableArray *helperReadyHolder = [NSMutableArray array];
+        [self performSelectorOnMainThread:@selector(ensureUmountHelperSetuidWithPromptInto:)
+                                withObject:helperReadyHolder
+                             waitUntilDone:YES];
+        BOOL helperReady = ([helperReadyHolder count] > 0) && [[helperReadyHolder objectAtIndex:0] boolValue];
+
+        if (helperReady) {
+            unmountOK = AQRunPrivilegedHelperUmount(mp, 10.0);
         }
+
         if (!unmountOK) {
-            /* 一部の環境(パッチ当てOSイメージ等)では、mount_webdavがsetuid rootで
-               マウントした結果、そのマウントがroot所有として扱われ、一般ユーザー権限の
-               umountが "Operation not permitted" で拒否されることがある(実機で確認済み)。
-               最終手段として、管理者パスワードのダイアログを出してumountする。 */
-            unmountOK = [self runPrivilegedUnmount:mountPointPath errorMessage:&privilegedError];
+            /* ヘルパーが使えない(準備を断られた等)、またはそれでも外れない場合の
+               最終手段として、従来のGUIパスワードダイアログも一応試す。
+               上記の理由で成功する見込みは薄いが、環境によっては通ることもあり
+               得るため保険として残す。 */
+            [self runPrivilegedUnmount:mp errorMessage:&privilegedError];
+            unmountOK = !AQIsMountPoint(mp);
         }
-    } else {
-        unmountOK = YES;
     }
 
     NSString *resultMessage;
     if (unmountOK) {
+        /* AQTeardownMountPoint以外の経路(ヘルパー直叩き・GUIダイアログ経由)で
+           外れた場合、空ディレクトリの片付けとFinderへの通知(どちらも
+           AQCleanupEmptyMountDir内)がまだ済んでいない。ここで確実に呼ぶ
+           (既に片付いていれば何もしない、呼んでも無害)。 */
+        AQCleanupEmptyMountDir(mp);
+        /* 外れたことを確認できた後で初めてサーバーを止める */
         if (webdavServer != nil) {
             [webdavServer stop];
             [webdavServer release];
@@ -1686,44 +2124,28 @@ static NSImage *IconForExtension(NSString *ext)
         mounted = NO;
         resultMessage = L("取り外しました");
     } else if (privilegedError != nil) {
-        /* 原因の切り分けを次回以降のやり取り無しでできるよう、実際のエラー内容を表示する
-           (実機ごとの環境差でここが変わりうるため、汎用メッセージだけでは診断できなかった)。 */
         resultMessage = [NSString stringWithFormat:L("取り外しに失敗しました: %@"), privilegedError];
     } else {
-        /* 取り外しに失敗した場合はサーバーを止めない(壊れたマウントを作らないため) */
-        resultMessage = L("取り外しに失敗しました。Finderから取り出すか、再度お試しください");
+        /* まだ外れていない。サーバーは絶対に止めない(壊れたマウントにしないため)。
+           一般利用者にターミナルやコマンドを触らせるのは避け、時間を置いての
+           再試行のみを案内する(過去にコピペ案内を出していたが、専門知識の無い
+           利用者には不向きと判断し撤回した)。 */
+        resultMessage = L("取り外しに失敗しました。しばらく待ってから、もう一度「取り外す」をお試しください");
     }
 
     [self performSelectorOnMainThread:@selector(mountFinishedWithMessage:)
                             withObject:resultMessage
                          waitUntilDone:NO];
+
     [pool release];
 }
 
-/* バックグラウンドスレッドから呼ばれる。umount(必要なら-f付き)を実行し、成功したかを返す */
+/* 旧API名の互換用。中身は新しい安全な後始末に委譲する(applicationWillTerminate等から
+   呼ばれる)。戻り値: 実行後に mountPoint がマウントポイントでなくなっていれば YES。 */
 - (BOOL)runUnmountCommand:(NSString *)mountPoint force:(BOOL)force
 {
-    NSTask *task = [[NSTask alloc] init];
-    [task setLaunchPath:@"/sbin/umount"];
-    if (force) {
-        [task setArguments:[NSArray arrayWithObjects:@"-f", mountPoint, nil]];
-    } else {
-        [task setArguments:[NSArray arrayWithObjects:mountPoint, nil]];
-    }
-    [task setStandardOutput:[NSPipe pipe]];
-    [task setStandardError:[NSPipe pipe]];
-
-    BOOL ok = NO;
-    @try {
-        [task launch];
-        [task waitUntilExit];
-        ok = ([task terminationStatus] == 0);
-    }
-    @catch (NSException *ex) {
-        ok = NO;
-    }
-    [task release];
-    return ok;
+    (void)force;
+    return AQTeardownMountPoint(mountPoint);
 }
 
 /* NSString の -stringByReplacingOccurrencesOfString:withString: はLeopard(10.5)以降のAPIで
@@ -1824,6 +2246,226 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         *outErrorMessage = ([outputStr length] > 0) ? outputStr : L("管理者権限でのumountに失敗しました");
     }
     return ok;
+}
+
+/* /sbin/mount_webdav のsetuidビットを管理者権限で復元する
+   (`chmod u+s /sbin/mount_webdav`)。OSアップデート等で剥がれたのを直すだけで、
+   本来あるべき状態に戻す操作。OS標準のパスワードダイアログが出る。
+   runPrivilegedUnmount:と同じ「出力が空 = 成功」判定を使う。 */
+- (BOOL)restorePrivilegedMountWebdavSetuid:(NSString **)outErrorMessage
+{
+    AuthorizationRef authRef = NULL;
+    OSStatus status = AuthorizationCreate(NULL, kAuthorizationEmptyEnvironment,
+                                           kAuthorizationFlagDefaults, &authRef);
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = [NSString stringWithFormat:@"AuthorizationCreate error %d", (int)status];
+        }
+        return NO;
+    }
+
+    AuthorizationItem right = { kAuthorizationRightExecute, 0, NULL, 0 };
+    AuthorizationRights rightSet = { 1, &right };
+    AuthorizationFlags authFlags = kAuthorizationFlagDefaults
+                                  | kAuthorizationFlagInteractionAllowed
+                                  | kAuthorizationFlagPreAuthorize
+                                  | kAuthorizationFlagExtendRights;
+    status = AuthorizationCopyRights(authRef, &rightSet, kAuthorizationEmptyEnvironment, authFlags, NULL);
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = (status == errAuthorizationCanceled)
+                ? L("パスワード入力がキャンセルされました")
+                : [NSString stringWithFormat:@"Authorization error %d", (int)status];
+        }
+        AuthorizationFree(authRef, kAuthorizationFlagDefaults);
+        return NO;
+    }
+
+    char *args[] = { (char *)"u+s", (char *)"/sbin/mount_webdav", NULL };
+    FILE *outputPipe = NULL;
+    status = AuthorizationExecuteWithPrivileges(authRef, "/bin/chmod", kAuthorizationFlagDefaults,
+                                                 args, &outputPipe);
+
+    NSMutableData *outputData = [NSMutableData data];
+    if (status == errAuthorizationSuccess && outputPipe != NULL) {
+        int fd = fileno(outputPipe);
+        char buf[512];
+        ssize_t n;
+        while ((n = read(fd, buf, sizeof(buf))) > 0) {
+            [outputData appendBytes:buf length:(unsigned)n];
+        }
+        fclose(outputPipe);
+        int wstatus = 0;
+        while (wait(&wstatus) == -1 && errno == EINTR) { }
+    }
+    AuthorizationFree(authRef, kAuthorizationFlagDestroyRights);
+
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = [NSString stringWithFormat:@"AuthorizationExecuteWithPrivileges error %d", (int)status];
+        }
+        return NO;
+    }
+
+    /* chmodは成功時に何も出力しない。加えて、実際にビットが立ったかを確認する */
+    NSDictionary *a = [[NSFileManager defaultManager]
+                          fileAttributesAtPath:@"/sbin/mount_webdav" traverseLink:YES];
+    BOOL bitSet = (a != nil &&
+                   ([[a objectForKey:NSFilePosixPermissions] unsignedLongValue] & 04000) != 0);
+    if (!bitSet && outErrorMessage != NULL) {
+        NSString *outputStr = [[[NSString alloc] initWithData:outputData
+                                                    encoding:NSUTF8StringEncoding] autorelease];
+        *outErrorMessage = ([outputStr length] > 0) ? outputStr
+                             : L("setuidビットの復元に失敗しました");
+    }
+    return bitSet;
+}
+
+/* 同梱のsetuid rootヘルパー(aqualink-umount-helper)を、初回だけ管理者権限で
+   root所有+setuidに仕上げる。新しく組んだ.appはコピーしただけなので所有者は
+   一般ユーザーのままであり、chmodだけでなくchownも必要(所有者がwatermarkの
+   ままsetuidを立てても、実行時の権限はwatermarkにしかならないため)。
+   このchown/chmod自体はumount特有のセッション制限を受けない(実機で確認済み。
+   setuid復元の"自動で直す"と同じ経路で確実に成功する)ので、GUIの
+   パスワードダイアログで問題ない。 */
+- (BOOL)restorePrivilegedUmountHelperSetuid:(NSString **)outErrorMessage
+{
+    NSString *helperPath = AQUmountHelperPath();
+    if (helperPath == nil) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = L("専用プログラムが見つかりません(古いビルドの可能性があります)");
+        }
+        return NO;
+    }
+
+    NSString *shellQuoted = AQReplaceAll(helperPath, @"'", @"'\\''");
+    NSString *shellCommand = [NSString stringWithFormat:
+        @"chown root:wheel '%@' && chmod 4755 '%@'", shellQuoted, shellQuoted];
+
+    AuthorizationRef authRef = NULL;
+    OSStatus status = AuthorizationCreate(NULL, kAuthorizationEmptyEnvironment,
+                                           kAuthorizationFlagDefaults, &authRef);
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = [NSString stringWithFormat:@"AuthorizationCreate error %d", (int)status];
+        }
+        return NO;
+    }
+
+    AuthorizationItem right = { kAuthorizationRightExecute, 0, NULL, 0 };
+    AuthorizationRights rightSet = { 1, &right };
+    AuthorizationFlags authFlags = kAuthorizationFlagDefaults
+                                  | kAuthorizationFlagInteractionAllowed
+                                  | kAuthorizationFlagPreAuthorize
+                                  | kAuthorizationFlagExtendRights;
+    status = AuthorizationCopyRights(authRef, &rightSet, kAuthorizationEmptyEnvironment, authFlags, NULL);
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = (status == errAuthorizationCanceled)
+                ? L("パスワード入力がキャンセルされました")
+                : [NSString stringWithFormat:@"Authorization error %d", (int)status];
+        }
+        AuthorizationFree(authRef, kAuthorizationFlagDefaults);
+        return NO;
+    }
+
+    char *args[] = { (char *)"-c", (char *)[shellCommand UTF8String], NULL };
+    FILE *outputPipe = NULL;
+    status = AuthorizationExecuteWithPrivileges(authRef, "/bin/sh", kAuthorizationFlagDefaults,
+                                                 args, &outputPipe);
+
+    NSMutableData *outputData = [NSMutableData data];
+    if (status == errAuthorizationSuccess && outputPipe != NULL) {
+        int fd = fileno(outputPipe);
+        char buf[512];
+        ssize_t n;
+        while ((n = read(fd, buf, sizeof(buf))) > 0) {
+            [outputData appendBytes:buf length:(unsigned)n];
+        }
+        fclose(outputPipe);
+        int wstatus = 0;
+        while (wait(&wstatus) == -1 && errno == EINTR) { }
+    }
+    AuthorizationFree(authRef, kAuthorizationFlagDestroyRights);
+
+    if (status != errAuthorizationSuccess) {
+        if (outErrorMessage != NULL) {
+            *outErrorMessage = [NSString stringWithFormat:@"AuthorizationExecuteWithPrivileges error %d", (int)status];
+        }
+        return NO;
+    }
+
+    BOOL ok = AQUmountHelperHasSetuid();
+    if (!ok && outErrorMessage != NULL) {
+        NSString *outputStr = [[[NSString alloc] initWithData:outputData
+                                                    encoding:NSUTF8StringEncoding] autorelease];
+        *outErrorMessage = ([outputStr length] > 0) ? outputStr
+                             : L("専用プログラムの準備に失敗しました");
+    }
+    return ok;
+}
+
+/* 「取り外す」の最終手段としてヘルパーを使う前の、初回だけの下準備。
+   既に準備済みなら何も聞かずYESを返す。未準備なら「自動で直す」ダイアログを
+   出し、承諾されればその場でchown/chmodして仕上げる。必ずメインスレッドで
+   呼ぶこと(NSAlertを使うため)。 */
+- (BOOL)ensureUmountHelperSetuidWithPrompt
+{
+    if (AQUmountHelperHasSetuid()) {
+        return YES;
+    }
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:L("初回の準備が必要です")];
+    [alert setInformativeText:L("「取り外す」を、パスワードのダイアログを毎回出さずに確実に行えるようにするため、初回だけ管理者権限で小さな専用プログラムを準備します。次回以降はこの確認は出ません。")];
+    [alert addButtonWithTitle:L("自動で準備する")];
+    [alert addButtonWithTitle:L("キャンセル")];
+    int resp = [alert runModal];
+    [alert release];
+    if (resp != NSAlertFirstButtonReturn) {
+        return NO;
+    }
+
+    NSString *err = nil;
+    BOOL ok = [self restorePrivilegedUmountHelperSetuid:&err];
+    if (!ok) {
+        NSAlert *failAlert = [[NSAlert alloc] init];
+        [failAlert setMessageText:L("準備に失敗しました")];
+        [failAlert setInformativeText:(err != nil) ? err : L("不明なエラーです")];
+        [failAlert addButtonWithTitle:L("OK")];
+        [failAlert runModal];
+        [failAlert release];
+    }
+    return ok;
+}
+
+/* doUnmount(バックグラウンドスレッド)からメインスレッドの
+   ensureUmountHelperSetuidWithPromptを同期呼び出しするための橋渡し。
+   NSAlertはメインスレッド必須、かつ結果を待ってから次に進みたいため
+   waitUntilDone:YESで呼び、結果はresultHolderに詰めて受け取る。 */
+- (void)ensureUmountHelperSetuidWithPromptInto:(NSMutableArray *)resultHolder
+{
+    BOOL ok = [self ensureUmountHelperSetuidWithPrompt];
+    [resultHolder addObject:[NSNumber numberWithBool:ok]];
+}
+
+/* AQRefreshFinderVolumeIconsから、Finderにウィンドウが開いている(または
+   判定できない)時に呼ばれる。デスクトップに残った空のアイコンを消すには
+   Finderの再起動が要るが、無断でウィンドウを閉じるのは避け、本人に選んで
+   もらう。取り外し自体は既に完了しているので、キャンセルしても実害は無い
+   (アイコンが見た目上残るだけ)。 */
+- (void)refreshFinderVolumeIconsAskingIfNeeded
+{
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:L("Finderを再起動しますか?")];
+    [alert setInformativeText:L("取り外しは完了していますが、デスクトップのアイコンは見た目上残ったままです。消すにはFinderの再起動が必要です。AquaLinkや他のアプリには影響ありませんが、今開いているFinderのウィンドウは一旦閉じます。")];
+    [alert addButtonWithTitle:L("再起動する")];
+    [alert addButtonWithTitle:L("あとで")];
+    int resp = [alert runModal];
+    [alert release];
+    if (resp == NSAlertFirstButtonReturn) {
+        AQKillallFinder();
+    }
 }
 
 /* ============ ブックマーク(接続履歴) ============ */
