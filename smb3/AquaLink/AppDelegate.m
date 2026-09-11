@@ -19,6 +19,9 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 /* applicationWillTerminate: (本ファイル前方)がマウントの後始末に使うため、
    定義(後方、Finderマウント節)より前で前方宣言しておく */
 static BOOL AQTeardownMountPoint(NSString *mountPoint);
+/* ImageAndTextCell(本ファイル前方で定義)が使うため、定義(後方、ファイル
+   一覧節)より前で前方宣言しておく。引数は拡張子文字列、フォルダならnil。 */
+static NSImage *IconForExtension(NSString *ext);
 
 /* 古いgcc(4.0系)はObjective-Cの @"..." 日本語リテラルを正しく解釈しないことがあるため、
    C文字列(生バイト列、コンパイラによる再解釈なし)からUTF-8として明示的に組み立てる */
@@ -258,44 +261,36 @@ static NSString *AQFirstIPv4FromNetService(NSNetService *service)
 /* 名前列用: 行頭に16pxのアイコンを描き、その右にファイル名を出すセル。
    Cyberduck/Transmit風の一覧にするための最小実装(Appleのサンプル
    ImageAndTextCellを10.4向けに削ったもの)。NSInteger等の10.5専用型は
-   使わず、Tigerの実際のメソッドシグネチャに合わせてintを使う。 */
+   使わず、Tigerの実際のメソッドシグネチャに合わせてintを使う。
+
+   [重大][PowerMac G4実機で確認・修正済み] 以前は「今描くべき画像」を
+   `iatImage`という自作のivarにsetImage:で持たせていた。NSTableViewは行を
+   選択した瞬間、ハイライト表示用にこのセルを内部で一時的に複製する
+   (copyWithZone:)動きがあり、その複製されたセルの中で`iatImage`ivarの
+   扱いが壊れ、値がゼロに近い小さなおかしい数値になってEXC_BAD_ACCESSで
+   落ちることが実機調査で判明した(複製直後にsetFlipped:で共有画像を
+   書き換える別の問題も併発しており、両方が絡んだ末の結果とみられる)。
+
+   根本原因を完全には特定しきれなかったため、対症療法ではなく設計そのものを
+   変えた: 自作のivarを一切持たず、NSCell標準の`representedObject`
+   (「拡張子」の文字列だけを保持する。フォルダならnil)を使う。この仕組みは
+   NSCell自身が持つ標準機能で、コピー時の扱いも含めてAppleの実装に
+   委ねられるため、自作ivarで起きたような複製時の不具合が原理的に起こらない。
+   画像そのものは毎回の描画時にIconForExtension()で(拡張子ごとにキャッシュ
+   済みの)共有画像を引くだけにし、セル自身は一切保持しない。 */
 @interface ImageAndTextCell : NSTextFieldCell
-{
-    NSImage *iatImage;
-}
-- (void)setImage:(NSImage *)anImage;
 @end
 
 @implementation ImageAndTextCell
 
-- (void)dealloc
-{
-    [iatImage release];
-    [super dealloc];
-}
-
-- (id)copyWithZone:(NSZone *)zone
-{
-    ImageAndTextCell *c = (ImageAndTextCell *)[super copyWithZone:zone];
-    c->iatImage = [iatImage retain];
-    return c;
-}
-
-- (void)setImage:(NSImage *)anImage
-{
-    if (anImage != iatImage) {
-        [iatImage release];
-        iatImage = [anImage retain];
-    }
-}
-
 /* アイコン分だけ右にずらした、文字を描くための矩形 */
 - (NSRect)iatTitleRectForBounds:(NSRect)bounds
 {
-    if (iatImage == nil) {
+    NSImage *img = IconForExtension([self representedObject]);
+    if (img == nil) {
         return bounds;
     }
-    float w = [iatImage size].width + 4;
+    float w = [img size].width + 4;
     NSRect r = bounds;
     r.origin.x += w;
     r.size.width -= w;
@@ -318,14 +313,14 @@ static NSString *AQFirstIPv4FromNetService(NSNetService *service)
 
 - (void)drawWithFrame:(NSRect)cellFrame inView:(NSView *)controlView
 {
-    if (iatImage != nil) {
-        NSSize is = [iatImage size];
+    NSImage *img = IconForExtension([self representedObject]);
+    if (img != nil) {
+        NSSize is = [img size];
         NSPoint p = cellFrame.origin;
         p.x += 2;
         p.y += (cellFrame.size.height - is.height) / 2.0;
-        [iatImage setFlipped:[controlView isFlipped]];
-        [iatImage drawAtPoint:p fromRect:NSZeroRect
-                    operation:NSCompositeSourceOver fraction:1.0];
+        [img drawAtPoint:p fromRect:NSZeroRect
+                operation:NSCompositeSourceOver fraction:1.0];
     }
     [super drawWithFrame:[self iatTitleRectForBounds:cellFrame] inView:controlView];
 }
@@ -1263,7 +1258,26 @@ static NSString *FriendlyConnectError(NSString *raw)
 
 /* 拡張子(フォルダの場合はnil)に対応する16pxアイコンを返す。
    NSWorkspaceの戻り値は使い回されるので、リサイズする前にcopyして
-   拡張子ごとにキャッシュする(同じ一覧で何度も引かれるため) */
+   拡張子ごとにキャッシュする(同じ一覧で何度も引かれるため)。
+
+   [重大][修正済み・PowerMac G4実機で確認] このキャッシュされたNSImageは
+   複数行・複数セルから共有される。以前は呼び出し側(ImageAndTextCellの
+   drawWithFrame:inView:)で描画のたびに[icon setFlipped:...]を呼んでいたが、
+   これは「行ごとに専用の画像」ではなく「共有された1つの画像オブジェクト」を
+   毎回ミュータブルに書き換えていたことになる。NSTableViewの行選択時、
+   AppKitは内部でハイライト用にセルを一時的にcopyWithZone:することがあり
+   (実機で確認済み: 通常はcCell=0x547dd0が固定だが、選択の瞬間だけ別アドレスの
+   コピーが一度だけ現れる)、そのコピーのiatImageも同じ共有画像インスタンスを
+   指す(copyWithZone:はiatImageを retain するだけで複製はしない)。つまり
+   「本来の行のセル」と「選択ハイライト用の一時コピー」が同時に同じ画像へ
+   setFlipped:するタイミングが生まれ得る。スクロールバーの帯をクリックして
+   一気に大量の行を再描画する操作(内部で行選択とほぼ同時に多数のwillDisplayCell
+   呼び出しが走る)と組み合わさった時に、PowerMac G4実機で
+   EXC_BAD_ACCESS(壊れたメモリへのアクセス)が再現した。他のアプリ(Aquafoxを
+   含む)はこの独自セルを使っていないため無関係で、AquaLink固有の不具合だった。
+   対策: setFlipped:を「描画のたび」ではなく「アイコンをキャッシュに入れる、
+   ただ一度だけ」ここで呼ぶように変更した。NSTableViewの中身は常にflippedな
+   座標系なので、行ごとに問い合わせ直す必要はそもそも無い。 */
 static NSImage *IconForExtension(NSString *ext)
 {
     static NSMutableDictionary *cache = nil;
@@ -1281,6 +1295,7 @@ static NSImage *IconForExtension(NSString *ext)
         : [ws iconForFile:@"/Library"];   /* 常に存在する素のフォルダ */
     icon = [[src copy] autorelease];
     [icon setSize:NSMakeSize(16.0, 16.0)];
+    [icon setFlipped:YES]; /* NSTableViewの行は常にflipped。ここで一度だけ設定する */
     if (icon != nil) {
         [cache setObject:icon forKey:key];
     }
@@ -1302,7 +1317,10 @@ static NSImage *IconForExtension(NSString *ext)
     NSDictionary *e = [entries objectAtIndex:rowIndex];
     BOOL isDir = [[e objectForKey:@"isDir"] boolValue];
     NSString *ext = isDir ? nil : [[e objectForKey:@"name"] pathExtension];
-    [aCell setImage:IconForExtension(ext)];
+    /* 画像そのものは持たせず、拡張子(文字列、フォルダならnil)だけをNSCell標準の
+       representedObjectに積む。実際の画像はセル自身がdrawWithFrame:inView:の
+       中でIconForExtension()から都度引く(詳細はImageAndTextCellのコメント参照)。 */
+    [aCell setRepresentedObject:ext];
 }
 
 /* ============ ドラッグ&ドロップ(書き出しのみ。第1段) ============ */
