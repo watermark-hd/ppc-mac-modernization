@@ -1014,6 +1014,12 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSString *username = [usernameField stringValue];
     NSString *password = [passwordField stringValue];
 
+    /* 依頼者フィードバック(2026-09-11): 接続先を示すpathLabel(「/共有名/パス」)が
+       小さくて見落とされる。ウィンドウのタイトルバーに接続先を出せば、どこに
+       繋がっているか一目で分かる。区切りの「—」はUTF8()経由で組む(@"..."直書き
+       だと古いgccで文字化けするため) */
+    [window setTitle:[NSString stringWithFormat:UTF8("AquaLink  —  %@/%@"), address, share]];
+
     [self addBookmarkWithAddress:address share:share username:username];
 
     /* 接続に成功したパスワードだけをKeychainに保存する(誤入力を覚えないため) */
@@ -1032,6 +1038,9 @@ static NSString *FriendlyConnectError(NSString *raw)
        全文を出すようにする。 */
     [statusLabel setStringValue:message];
     [connectButton setEnabled:YES];
+    /* doConnect:は新しい接続を試す前に必ず既存の接続を切っているので、失敗時点で
+       前の接続はもう無い。タイトルバーを素のアプリ名に戻す。 */
+    [window setTitle:@"AquaLink"];
 
     NSAlert *alert = [[NSAlert alloc] init];
     [alert setMessageText:L("接続に失敗しました")];
@@ -2559,11 +2568,12 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 {
     int nDiscovered = (int)[discoveredServices count];
     if (index >= 0 && index < nDiscovered) {
+        /* 依頼者フィードバック(2026-09-11): 「名前 — IPアドレス」表示は長すぎて
+           プルダウン内で読めない。選ぶ時に必要なのは名前だけで、IPは選択後に
+           comboBoxSelectionDidChange:で自動的に埋まる(下記)ので、見せる必要が
+           無い。名前だけ表示する。 */
         NSDictionary *svc = [discoveredServices objectAtIndex:index];
-        /* 「名前 — IPアドレス」の形で見せる。選ばれた時はIP部分だけ取り出して使う。
-           区切りの「—」は @"..." 直書きだと古いgccで文字化けするのでUTF8()で組む */
-        return [NSString stringWithFormat:UTF8("%@  —  %@"),
-                  [svc objectForKey:@"name"], [svc objectForKey:@"address"]];
+        return [svc objectForKey:@"name"];
     }
     int bIndex = index - nDiscovered;
     if (bIndex >= 0 && bIndex < (int)[bookmarks count]) {
