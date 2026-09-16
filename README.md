@@ -33,6 +33,11 @@ A native Cocoa app for Tiger/Leopard PowerPC Macs, built around
 still compiles on this hardware — see [`smb3/README.md`](smb3/README.md) for the full
 build story).
 
+**Download:** grab the latest `AquaLink-vX.X.X.zip` from the
+[Releases page](https://github.com/watermark-hd/ppc-mac-modernization/releases) —
+that's the built app, ready to run. The green "Code" button above only gives you the
+source, not this.
+
 AquaLink does two things:
 
 - **SMB3 client**: browse and drag-and-drop files to/from a modern SMB3 NAS,
@@ -126,6 +131,10 @@ Tiger/Leopard 世代の PowerPC Mac 向けに書かれたネイティブ Cocoa �
 [libsmb2](https://github.com/sahlberg/libsmb2)(この世代のハードでもビルドできる、
 唯一と言っていい SMB2/3 クライアントライブラリ。ビルドの詳細は
 [`smb3/README.md`](smb3/README.md) 参照)を土台にしています。
+
+**ダウンロード:** [Releasesページ](https://github.com/watermark-hd/ppc-mac-modernization/releases)
+から最新の `AquaLink-vX.X.X.zip` をどうぞ。ビルド済みのアプリ本体です。上部の緑の
+「Code」ボタンはソースコードだけなので、そちらではありません。
 
 AquaLink は2つの機能を持っています。
 
