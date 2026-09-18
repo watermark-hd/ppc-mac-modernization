@@ -311,10 +311,24 @@ static NSData *Base64Decode(NSString *input)
 
 - (void)sendUnauthorized:(int)fd
 {
-    /* checkAuth: はDigest/Basicの両方を検証できるが、チャレンジとしてはBasicのみ提示する。
-       Windowsの標準WebDAVクライアント(Microsoft-WebDAV-MiniRedir)は、同じ401応答に
-       DigestとBasicの両方のWWW-Authenticateが含まれていると、
-       どちらの認証情報も送らずに諦めてしまうことが実機検証で判明したため。 */
+    /* [2026-09-18、Digest限定への切り替えを試した結果、断念] パスワードを
+       盗聴から守るためDigestのみを要求するよう変更してみたが、実機検証で
+       macOS純正のFinder経由マウント(WebDAVFSクライアント)が全く相性が
+       悪いことが判明した: 認証情報を一切付けずに同じPROPFINDを無限に
+       送り続け、Finderの「接続中」から永久に戻ってこない(実際にログが
+       数秒で14MB超まで膨れ上がった)。curlでは問題なくDigestが通ったので、
+       サーバー側の実装自体の不備というよりmacOS純正クライアント側の
+       Digest対応の弱さと見られる。
+       Basic+Digestを両方チャレンジするとWindows標準WebDAVクライアントが
+       諦める(下記の元々の理由)、DigestのみだとmacOS純正クライアントが
+       ハングする、という板挟みで、今回はBasicへ戻す判断とした。
+       元々の理由: 同じ401応答にDigestとBasic両方のWWW-Authenticateを
+       含めると、Windows標準WebDAVクライアント(Microsoft-WebDAV-MiniRedir)
+       がどちらの認証情報も送らずに諦めることが実機検証で判明したため、
+       Basicのみを要求している。checkAuth: はDigest/Basicの両方を検証
+       できる作りのまま残してあるので、将来別の切り分け方(例:
+       User-Agentで判定してクライアントごとにチャレンジを変える等)を
+       試す余地はある。 */
     NSMutableString *head = [NSMutableString string];
     [head appendString:@"HTTP/1.1 401 Unauthorized\r\n"];
     [head appendString:@"WWW-Authenticate: Basic realm=\"AquaLink\"\r\n"];
