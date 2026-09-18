@@ -12,6 +12,11 @@
     int listenFd;
     int port;
     BOOL shouldRun;
+
+    /* [2026-09-18追加] 認証失敗を繰り返すクライアントを弾くための簡易な
+       レート制限。詳細はrecordAuthFailureForIP:/isRateLimitedForIP:参照 */
+    NSMutableDictionary *authFailureCounts; /* { IP(NSString) : {count, windowStart} } */
+    NSLock *authFailureLock; /* 複数の接続スレッドから同時に触られるため */
 }
 
 - (id)initWithShares:(NSDictionary *)sharesDict user:(NSString *)user password:(NSString *)password;
@@ -20,7 +25,9 @@
 - (int)port;
 
 - (void)acceptLoop;
-- (void)handleConnection:(NSNumber *)fdNumber;
+- (void)handleConnection:(NSDictionary *)connInfo;
+- (BOOL)isRateLimitedForIP:(NSString *)ip;
+- (void)recordAuthFailureForIP:(NSString *)ip;
 - (BOOL)checkAuth:(NSDictionary *)headers method:(NSString *)method path:(NSString *)path;
 - (void)sendUnauthorized:(int)fd;
 - (BOOL)readRequestFromSocket:(int)fd

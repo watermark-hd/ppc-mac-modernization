@@ -184,6 +184,8 @@ static NSData *Base64Decode(NSString *input)
         listenFd = -1;
         shouldRun = NO;
         port = 0;
+        authFailureCounts = [[NSMutableDictionary alloc] init];
+        authFailureLock = [[NSLock alloc] init];
     }
     return self;
 }
@@ -248,14 +250,75 @@ static NSData *Base64Decode(NSString *input)
             }
             continue;
         }
+        NSString *clientIP = [NSString stringWithUTF8String:inet_ntoa(clientAddr.sin_addr)];
+        NSDictionary *connInfo = [NSDictionary dictionaryWithObjectsAndKeys:
+                                   [NSNumber numberWithInt:clientFd], @"fd",
+                                   clientIP, @"ip", nil];
         [NSThread detachNewThreadSelector:@selector(handleConnection:)
                                   toTarget:self
-                                withObject:[NSNumber numberWithInt:clientFd]];
+                                withObject:connInfo];
     }
     [pool release];
 }
 
 /* ============ 認証 ============ */
+
+/* [2026-09-18追加] 認証失敗を繰り返すクライアントを弾くための簡易なレート制限。
+   きっかけ: Digest認証を試した際、macOS純正のFinderクライアントが認証情報を
+   一切付けずに同じリクエストを無限に送り続け、数秒でログが14MB超まで
+   膨れ上がる事態が実機で発生した(詳細はsmb3/README.md参照)。原因がどちら
+   側にあっても、「短時間に大量の認証失敗を繰り返す相手には、しばらく
+   相手をしない」という安全装置を入れておけば、同種の暴走(バグでも、
+   総当たり攻撃でも)による資源の浪費を防げる。
+   閾値はほどほどに緩く設定してある(普通の利用でパスワードを数回打ち間違えた
+   程度では引っかからない)。 */
+#define AQ_RATE_LIMIT_WINDOW_SECONDS 5.0
+#define AQ_RATE_LIMIT_MAX_FAILURES 20
+#define AQ_RATE_LIMIT_COOLDOWN_SECONDS 30.0
+
+- (BOOL)isRateLimitedForIP:(NSString *)ip
+{
+    if (ip == nil) {
+        return NO;
+    }
+    BOOL limited = NO;
+    [authFailureLock lock];
+    NSDictionary *entry = [authFailureCounts objectForKey:ip];
+    if (entry != nil) {
+        NSDate *windowStart = [entry objectForKey:@"windowStart"];
+        int count = [[entry objectForKey:@"count"] intValue];
+        double elapsed = -[windowStart timeIntervalSinceNow];
+        if (count >= AQ_RATE_LIMIT_MAX_FAILURES && elapsed < AQ_RATE_LIMIT_COOLDOWN_SECONDS) {
+            limited = YES;
+        }
+    }
+    [authFailureLock unlock];
+    return limited;
+}
+
+- (void)recordAuthFailureForIP:(NSString *)ip
+{
+    if (ip == nil) {
+        return;
+    }
+    [authFailureLock lock];
+    NSDictionary *entry = [authFailureCounts objectForKey:ip];
+    NSDate *windowStart = (entry != nil) ? [entry objectForKey:@"windowStart"] : nil;
+    int count = (entry != nil) ? [[entry objectForKey:@"count"] intValue] : 0;
+    double elapsed = (windowStart != nil) ? -[windowStart timeIntervalSinceNow] : 0.0;
+    if (windowStart == nil || elapsed > AQ_RATE_LIMIT_WINDOW_SECONDS) {
+        /* 直近の失敗から時間が経っていれば、集計をリセットして数え直す */
+        windowStart = [NSDate date];
+        count = 1;
+    } else {
+        count++;
+    }
+    NSDictionary *newEntry = [NSDictionary dictionaryWithObjectsAndKeys:
+                               windowStart, @"windowStart",
+                               [NSNumber numberWithInt:count], @"count", nil];
+    [authFailureCounts setObject:newEntry forKey:ip];
+    [authFailureLock unlock];
+}
 
 - (BOOL)checkAuth:(NSDictionary *)headers method:(NSString *)method path:(NSString *)path
 {
@@ -338,10 +401,20 @@ static NSData *Base64Decode(NSString *input)
 
 /* ============ 1接続分の処理 ============ */
 
-- (void)handleConnection:(NSNumber *)fdNumber
+- (void)handleConnection:(NSDictionary *)connInfo
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-    int fd = [fdNumber intValue];
+    int fd = [[connInfo objectForKey:@"fd"] intValue];
+    NSString *clientIP = [connInfo objectForKey:@"ip"];
+
+    /* 短時間に大量の認証失敗を繰り返している相手には、リクエストの中身すら
+       読まずに即座に切る。無限リトライの暴走(実機で確認済み)による
+       スレッド・ログの浪費を防ぐための安全装置。 */
+    if ([self isRateLimitedForIP:clientIP]) {
+        close(fd);
+        [pool release];
+        return;
+    }
 
     NSString *method = nil;
     NSString *path = nil;
@@ -351,6 +424,7 @@ static NSData *Base64Decode(NSString *input)
     if ([self readRequestFromSocket:fd method:&method path:&path headers:&headers body:&body]) {
         /* OPTIONSはクライアントが機能確認のため認証前に送ってくることが多いので許可する */
         if (![method isEqualToString:@"OPTIONS"] && ![self checkAuth:headers method:method path:path]) {
+            [self recordAuthFailureForIP:clientIP];
             [self sendUnauthorized:fd];
         } else {
             NSString *depth = [headers objectForKey:@"depth"];
@@ -933,6 +1007,8 @@ static NSData *Base64Decode(NSString *input)
     [shares release];
     [authUser release];
     [authPassword release];
+    [authFailureCounts release];
+    [authFailureLock release];
     [super dealloc];
 }
 
