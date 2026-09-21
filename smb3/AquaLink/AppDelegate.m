@@ -234,6 +234,47 @@ static NSString *FormatDate(unsigned long long mtime)
                                     locale:nil];
 }
 
+/* 文字列がIPv4アドレスの見た目(数字4つを"."で区切った形。末尾に":ポート番号"が
+   付いていてもよい)をしているかどうかだけを判定する。実在するアドレスかどうかは
+   問わない、あくまで「見た目がIPアドレスっぽいか」の簡易判定。
+   [フェーズC項目7] 「ユーザー名」「共有名」の欄に本来アドレス欄に入るべき
+   IPアドレスが紛れ込んでいないか(入力欄を取り違えていないか)を確認する
+   ためだけに使う。入力内容は一切書き換えず、確認を促すだけに留める方針
+   (2026-09-03、依頼者との合意: "賢すぎる自動修正"は危険なのでやらない)。 */
+static BOOL AQLooksLikeIPv4Address(NSString *s)
+{
+    if ([s length] == 0) {
+        return NO;
+    }
+    /* ":ポート番号"が付いていれば、まずそこを切り落とす */
+    NSRange colonRange = [s rangeOfString:@":"];
+    NSString *hostPart = (colonRange.location != NSNotFound)
+        ? [s substringToIndex:colonRange.location] : s;
+
+    NSArray *parts = [hostPart componentsSeparatedByString:@"."];
+    if ([parts count] != 4) {
+        return NO;
+    }
+    NSEnumerator *e = [parts objectEnumerator];
+    NSString *part;
+    while ((part = [e nextObject])) {
+        if ([part length] == 0 || [part length] > 3) {
+            return NO;
+        }
+        unsigned i;
+        for (i = 0; i < [part length]; i++) {
+            unichar c = [part characterAtIndex:i];
+            if (c < '0' || c > '9') {
+                return NO;
+            }
+        }
+        if ([part intValue] > 255) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
 /* NSNetServiceのaddresses(struct sockaddrを包んだNSDataの配列)から、
    最初のIPv4アドレスを "192.168.x.x" 形式の文字列で返す。無ければnil。
    ホスト名(service.hostName)ではなく数値IPをそのまま使うのは、環境によって
@@ -883,6 +924,39 @@ static NSString *FriendlyConnectError(NSString *raw)
     NSString *address = [urlField stringValue];
     NSString *share = [shareField stringValue];
     NSString *password = [passwordField stringValue];
+
+    /* [フェーズC項目7] 入力欄の取り違えチェック。「共有名」または「ユーザー名」の
+       欄に、本来アドレス欄に入るべきIPアドレスの見た目の文字列が入っていたら、
+       中身は一切書き換えずに確認だけする。両方の欄でも起きていれば1つの
+       ダイアログにまとめて出す。 */
+    NSMutableArray *mixupWarnings = [NSMutableArray array];
+    if (AQLooksLikeIPv4Address(share)) {
+        [mixupWarnings addObject:L("「共有名」欄に、IPアドレスのような文字列が入っています。アドレス欄と入れ替わっていませんか?")];
+    }
+    if (AQLooksLikeIPv4Address(username)) {
+        [mixupWarnings addObject:L("「ユーザー名」欄に、IPアドレスのような文字列が入っています。アドレス欄と入れ替わっていませんか?")];
+    }
+    /* [撤回・2026-09-21] 「アドレス欄がIP/サーバー名の形に見えない」チェックも
+       一時追加したが、依頼者から「英数字だけなら区別できないし、そもそも
+       利用者の7割は海外で、カタカナ等の非ASCII混入自体がまず起きない」との
+       指摘を受け撤回した。日本語混入だけ検知できても実際の利用者層には
+       ほぼ効果が無いという判断。IPアドレスの見た目かどうかは言語に依らず
+       万国共通で判定できるため、上の2つ(共有名/ユーザー名へのIP混入)は
+       そのまま残す。 */
+    if ([mixupWarnings count] > 0) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:L("入力欄を確認してください")];
+        [alert setInformativeText:[NSString stringWithFormat:@"%@\n\n%@",
+            [mixupWarnings componentsJoinedByString:@"\n\n"],
+            L("内容は書き換えていません。")]];
+        [alert addButtonWithTitle:L("このまま接続")];
+        [alert addButtonWithTitle:L("見直す")];
+        int resp = [alert runModal];
+        [alert release];
+        if (resp != NSAlertFirstButtonReturn) {
+            return;
+        }
+    }
 
     /* ユーザー名はURL文字列に埋め込まず、別経路(doConnect:のargs)でsmb2_set_user()に
        直接渡す。以前は "smb://user@address/share" の形にユーザー名を埋め込んでいたが、
