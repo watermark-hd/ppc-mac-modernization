@@ -838,3 +838,106 @@ PID/Threadはあっても、**機種名の行はそもそも存在しない**こ
 `sysctlbyname("hw.model", ...)`でMac本体から直接取得する方式に変更した。
 実機テストでは`PowerBook6,5`(このiBook G4の機種ID)が正しく取れることを
 確認済み。
+
+## v0.5.20→v0.5.22: 「iBookをNAS化する」共有機能にHTTPS(TLS)対応を追加
+
+### 背景
+
+以前のセキュリティレビュー(2026-09-18)で、「iBookをNAS化する」共有機能
+(`LocalWebDAVServer.m`)が平文HTTP + Basic認証のままであることが最大の
+弱点として明記されていた。Tiger標準の古いOpenSSLではTLSがまともに使えない
+ための意図的な設計判断だったが、根本的な弱点であることに変わりはなく、
+「自前でOpenSSLを抱え込めないか」という依頼者からの問いを受けて着手した。
+
+### OpenSSLの選定: 3.6.4は諦め1.0.2系を採用
+
+PPCPortsには`devel/openssl3`(OpenSSL 3.6.4、PPC/Tiger向けビルド設定込み)
+が既に存在し、技術的な実現性は確認済みだった。ただしiBookにはMacPorts
+自体が入っておらず、libsmb2と同じくソースから直接ビルドする方針を選択。
+
+ここで実機の壁にぶつかった: OpenSSL 3.6.4の`Configure`はPerl 5.10.0以上を
+要求するが、Tiger標準のPerlは5.8.6(`Perl v5.10.0 required--this is only
+v5.8.6, stopped at ./Configure line 12.`)。OpenSSL 1.1.1系も同じく
+`use 5.10.0;`で同じ壁に当たる。**OpenSSL 1.0.2系だけは`require 5.000;`
+と要求が緩く、Tiger標準のPerlでそのまま`Configure`が通る**ことを確認し、
+最終版1.0.2u(2019年12月, EOL)を採用した。TLS 1.3は使えずTLS 1.2までだが、
+WebDAVの暗号化用途には十分と判断。
+
+```
+./Configure darwin-ppc-cc no-asm no-shared no-zlib no-hw --prefix=...
+make
+```
+で`libssl.a`/`libcrypto.a`が生成される。libsmb2と同じく`~/developer/openssl/`
+に配置し、静的リンクする方針(MacPortsは導入しない)。
+
+### 検証は「libsmb2の時のB案」と同じ順序で
+
+いきなり本体に組み込まず、まず最小限の検証プログラム(自己署名証明書を
+その場で生成し、1接続だけ`SSL_accept`してハンドシェイクの成立を見るだけの
+使い捨てC言語プログラム)を実機でビルド・実行し、母艦からの`curl -k
+https://`接続でTLS 1.2ハンドシェイクの成立を確認してから、本体
+(`LocalWebDAVServer.m`)への組み込みに進んだ。この順序のおかげで、
+OpenSSL自体の実機動作可否と、本体組み込み後の不具合を切り分けられた。
+
+### 実装
+
+- `LocalWebDAVServer.m`の低レベル送受信(`recv`/`send`が出てくるのは
+  `readRequestFromSocket:`内2箇所と`sendBytes:toSocket:`内1箇所だけ)を、
+  `aq_readSocket:buffer:length:`/`aq_writeSocket:buffer:length:`という
+  共通口に差し替えた。この2つのメソッドだけが、fd番号をキーにした
+  対応表(`tlsConnections`、`NSLock`で保護)を見てTLS接続なら
+  `SSL_read`/`SSL_write`、そうでなければ従来通り`recv`/`send`に
+  フォールバックする。呼び出し側(`handleGET:`等、既存の`toSocket:fd`
+  という引数の全メソッド)は一切変更不要だった。
+- 自己署名証明書+RSA鍵は`~/Library/Application Support/AquaLink/`に
+  一度だけ生成して以後使い回す(毎回作り直すとFinder側で信頼した証明書が
+  無効になり、起動のたびに警告が出てしまうため)。
+- 共有設定画面に「HTTPS(暗号化・実験的)」チェックボックスを追加。
+  既定OFF(新機能のため段階的ロールアウト)。オン/オフで下の警告文言も
+  即座に切り替わる。
+
+### 実機で見つけたバグ: `createDirectoryAtPath:withIntermediateDirectories:`もTigerに無い
+
+証明書保存用ディレクトリの作成に`[[NSFileManager defaultManager]
+createDirectoryAtPath:withIntermediateDirectories:attributes:error:]`を
+使ったところ、`'NSFileManager' may not respond to`という警告が出た。
+v0.5.20のNSAlert `setAccessoryView:`の一件を受けて、今回は警告を
+「古いヘッダーの誤検知だろう」と流さず、`respondsToSelector:`で
+実機検証したところ、**このメソッドはLeopard(10.5)以降のAPIで、Tigerには
+本当に存在しない**ことを確認した(`responds(new)=0`、Tiger互換の旧API
+`createDirectoryAtPath:attributes:`は`responds(old)=1`)。プロジェクト内の
+他の箇所(`AppDelegate.m`のマウントポイント作成)で既にこの旧APIが
+使われていたのも、この判定の裏付けになった。同じ轍を2回続けて踏まずに
+済んだ。
+
+### 検証(実機、Finder経由の実マウントまで)
+
+- 自前の検証プログラムでのTLSハンドシェイク成立(前述)
+- 本体組み込み後、`curl -k -u user:pass https://iBook:port/`でTLS
+  ハンドシェイク・Basic認証・PROPFIND・GETが正常に動くことを確認
+- **母艦のFinderから`https://iBookのIP:ポート/`で実際にマウント**。
+  自己署名証明書の警告(OS標準)が出て「継続」で信頼、認証、共有フォルダの
+  閲覧・ファイル取得まで実機で確認済み
+- HTTPSをOFFにした従来の平文HTTPモードが引き続き動作することも確認(回帰なし)
+
+### 今回のスコープ外: Windows側の証明書信頼
+
+macOS Finderは自己署名証明書への「継続」ボタンがOS標準でほぼ自動なのに
+対し、Windows標準のWebDAVクライアントは証明書を事前に「信頼されたルート
+証明機関」へインポートする手作業が必要になる見込みで、これは別途の
+検討事項として今回は対象外とした(`windows-setup/`のガイドは今回未着手)。
+Windowsからの共有接続は当面平文HTTPのまま。
+
+### PPCPorts側の対応
+
+`aqua/aqualink`のPortfileに`depends_lib-append port:openssl3`と
+`build.args`への`OPENSSL_DIR=${prefix}/libexec/openssl3`を追加
+(openssl3ポートは`libsmb2`と違い`${prefix}/lib`ではなく専用の
+`${prefix}/libexec/openssl3`配下にインストールされるため、libsmb2の
+`build.args LIBSMB2_DIR=${prefix}`とは書き方が異なる)。合わせて、
+Makefileの`OPENSSL_SSL_A`/`OPENSSL_CRYPTO_A`の探索を、手元ビルドの
+フラットな配置決め打ちから、`LIBSMB2_A`と同じ「dylib→静的.a→ビルド
+ツリー」の柔軟な探索に修正(これを忘れると、PPCPorts経由のビルドが
+リンクエラーで失敗していたはずだった)。この修正がv0.5.21のタグ後に
+入ったため、機能面の変更なしにv0.5.22として別途バージョンを上げた
+(v0.5.1→v0.5.2の前例と同じ扱い)。
