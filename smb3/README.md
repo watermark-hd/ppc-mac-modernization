@@ -941,3 +941,31 @@ Makefileの`OPENSSL_SSL_A`/`OPENSSL_CRYPTO_A`の探索を、手元ビルドの
 リンクエラーで失敗していたはずだった)。この修正がv0.5.21のタグ後に
 入ったため、機能面の変更なしにv0.5.22として別途バージョンを上げた
 (v0.5.1→v0.5.2の前例と同じ扱い)。
+
+## windows-setup: WebClientが非標準ポート宛ての認証情報を拒否する問題(system error 1244)
+
+2026-09-22、実機のWindows 11で`connect-aqualink.bat`を初めて試した際、
+`net use`が「システムエラー1244が発生しました。ユーザーが認証されていない
+ため、要求された操作は実行されませんでした。」で失敗した。
+
+**原因:** WindowsのWebClientサービスは、`BasicAuthLevel`/`UseBasicAuth`で
+平文HTTP上のBasic認証を許可していても、**接続先が`AuthForwardServerList`
+という許可リストに入っていない限り、認証情報そのものを送信しない**。
+AquaLinkは既定で80番ではない非標準ポート(8091)で待ち受けているため、この
+許可リストが未設定だと確実にこの1244エラーになる。エラーメッセージ自体は
+「認証されていない」としか言わず、ポートが原因だとは分からない。
+
+**対策:** `setup-aqualink.ps1`の既存の昇格済みレジストリ変更ブロック
+(`BasicAuthLevel`/`UseBasicAuth`を設定している箇所)に、
+`AuthForwardServerList`(REG_MULTI_SZ)へ`*`を追加する行を足し、同じ
+`net stop/start webclient`で反映されるようにした。これはこの1台固有の
+問題ではなく、**AquaLinkの既定ポート(8091)を使う限り、Windows側の初回
+接続では原理的に必ず踏む問題**だったため、スクリプト自体の不具合として
+修正し、`AquaLink配布/AquaLink-windows-setup.zip`も更新した。
+
+なお、この症状が出た際にもう一つ、`connect-aqualink.bat`自体がWindows
+11の**スマートアプリコントロール**にブロックされ、「どのアプリを使用
+しますか」という表示になる事象も先に発生した。対処は`.bat`ファイルを
+右クリック→プロパティ→「許可する」にチェック(Mark of the Webの解除)。
+これはアプリ本体ではなくWindows側のダウンロードファイル警告の仕組みに
+よるもの。
