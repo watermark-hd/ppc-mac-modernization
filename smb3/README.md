@@ -757,3 +757,84 @@ AquaLink側の対応:
   確認ダイアログを出す(比較作業中の事故防止。実際に依頼者から
   「複数のFinderを開いて比較中に再起動されたら困る」という指摘を受けて
   この設計にした)。
+
+## v0.5.19→v0.5.20: クラッシュレポート機能(オプトイン)の追加、実機で見つけたAppKitの罠2件
+
+### 機能概要
+
+前回終了時に`~/Library/Logs/CrashReporter/AquaLink.crash.log`が増えていたら
+(`Date/Time:`の出現回数を、`NSUserDefaults`に保存した既読件数と比較)、
+最新のクラッシュ記録全文をスクロール表示した上で「送信する/送信しない」を
+毎回確認する。自動送信は一切しない。送信内容はそのまま(書き換えなし)。
+送信先は自社サイト(`oldmac.policy-log.jp`)で、サーバー側が開発者へメール
+転送する。プライバシー上の理由からアプリから直接メール送信はしない、という
+依頼者の設計方針による(アプリ側からSMTP等で直接送るとメールアドレス等が
+アプリのバイナリ/設定に残ってしまう)。
+
+送信先はわざと`https://`ではなく`http://`。Tigerの古いOpenSSL/SecureTransport
+がLet's Encrypt等の現代的な証明書(SHA-256署名)を検証できない
+(`curl`実機検証で`unknown message digest algorithm`を確認済み)。10.6以降にある
+正規の検証スキップの仕組みも、非公開API`+[NSURLRequest
+setAllowsAnyHTTPSCertificateForHost:]`も実機で試したが、`NSURLConnection`側
+では"bad server certificate"のまま解消しなかった(`curl -k`が効いても
+Cocoa側の証明書検証には効かない、という新知見)。対策として、サーバー側の
+nginxで`/crash-report/submit`だけを平文HTTPの例外にした(他は引き続き
+HTTPS強制)。送るのはクラッシュログ(認証情報を含まない診断データ)であり、
+利用者の明示同意が毎回必須という前提でこのトレードオフを許容した。
+
+### 実機で見つけたバグ1: `-[NSAlert setAccessoryView:]`がこのTigerに実在しない
+
+当初は`NSAlert`の`setAccessoryView:`でログ全文のスクロール表示を出す予定
+だった。コンパイル時に`'NSAlert' may not respond to '-setAccessoryView:'`
+という警告が出ていたが、他の警告と同様に「古いSDKヘッダーの記述漏れ
+(実行時には存在する)」だろうと判断して進めた。
+
+実機で試したところ、**ダイアログが一切出ないのにアプリ全体はクラッシュ
+しない**という厄介な壊れ方をした。原因調査のため、iBook上に最小限の
+再現コードを書いて`respondsToSelector:`と`@try/@catch`で直接確認したところ、
+`respondsToSelector:`が`0`(false)を返し、呼び出すと本物の
+`NSInvalidArgumentException`(`selector not recognized`)が発生することを
+確認した。つまりこの警告は誤検知ではなく、**このTiger 10.4.11のAppKitには
+本当にこのメソッドが存在しない**。例外自体はAppKitの既定の処理で握りつぶされ
+アプリは生き続けるため、ダイアログを出そうとした処理の残りだけが静かに
+中断される、という発見しにくい壊れ方だった(実機でAppleScriptからウィンドウの
+有無を確認して初めて気づいた)。
+
+対策として`NSAlert`を諦め、本ファイル内の既存パターン(Windows接続ガイド用の
+`windowsGuideWindow`)と同じ「自前の`NSWindow` + `[NSApp
+runModalForWindow:]`」方式に置き換えた。
+
+### 実機で見つけたバグ2: ダイアログを閉じた直後にAppKit内部処理とレースしてクラッシュ
+
+自前ウィンドウ化した後、モーダル終了直後に`[panel release]`すると、
+`EXC_BAD_ACCESS`で実機クラッシュすることを確認した(`Thread 0 Crashed`の
+先頭が`-[NSWindow(NSDrag) _registerDragTypes:]`←`__NSFireDelayedPerform`)。
+`[panel release]`をやめても、`[panel close]`だけでも同様に再現した。
+
+AppKitはウィンドウを表示すると、ドラッグタイプ登録という比較的重い初期化
+(`CoreDragRegisterClientWithOptions`等)を`CFRunLoop`のタイマー経由で
+遅延実行する。このダイアログは「出してすぐ閉じる」という寿命が短い使い方
+なので、閉じる/解放する操作がその遅延処理の完了より先に終わってしまうと、
+後から発火した処理が壊れた(または解放済みの)ウィンドウ状態を触って
+落ちる、という競合と判断した。`windowsGuideWindow`はユーザーがしばらく
+読んでから閉じる想定のウィンドウなので、同じ潜在バグを抱えていても
+表面化していなかっただけと考えられる。
+
+対策として、モーダル終了後は`close`も`release`も呼ばず、`[panel
+performSelector:@selector(orderOut:) withObject:nil afterDelay:1.0]`で
+1秒遅らせてから隠すようにした。実機で「送信しない」ボタンを3回連続で
+押すテストを行い、いずれもクラッシュしないことを確認済み。起動につき
+最大1回しか作らないダイアログなので、close/releaseを省くことによる
+リークは実害がごくわずかと判断した。
+
+### 副産物: クラッシュログの機種名を`Model:`行から拾うのをやめた
+
+当初はクラッシュログ本文の`Model:`という行から機種名を抜き出す予定
+だったが、実機の`~/Library/Logs/CrashReporter/`に残っていた他アプリの
+実際のクラッシュログ(Tiger 10.4.11)を確認したところ、Host
+Name/Date/Time/OS Version/Report Version/Command/Path/Parent/Version/
+PID/Threadはあっても、**機種名の行はそもそも存在しない**ことが判明した
+(`Model:`はもちろん`Hardware Model:`も無い)。ログからの抽出をやめ、
+`sysctlbyname("hw.model", ...)`でMac本体から直接取得する方式に変更した。
+実機テストでは`PowerBook6,5`(このiBook G4の機種ID)が正しく取れることを
+確認済み。
