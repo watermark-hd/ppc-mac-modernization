@@ -43,12 +43,20 @@ Write-Host ""
 
 # 1. WebClient Basic auth settings (allow Basic auth over plain HTTP)
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
-$needReg = -not ((Test-RegistryValue $regPath "BasicAuthLevel" 2) -and (Test-RegistryValue $regPath "UseBasicAuth" 1))
+$authForwardList = (Get-ItemProperty -Path $regPath -Name "AuthForwardServerList" -ErrorAction SilentlyContinue).AuthForwardServerList
+$hasWildcardForward = ($null -ne $authForwardList) -and ($authForwardList -contains "*")
+$needReg = -not ((Test-RegistryValue $regPath "BasicAuthLevel" 2) -and (Test-RegistryValue $regPath "UseBasicAuth" 1) -and $hasWildcardForward)
 
 if ($needReg) {
     Write-Host "First-time setup: registry change needed (an admin approval popup will appear)..." -ForegroundColor Yellow
+    # AuthForwardServerList: WebClient refuses to send Basic auth credentials to any
+    # server unless it's on this allow-list. AquaLink normally listens on a non-standard
+    # port (8091 by default, not 80), and WebClient's default behavior otherwise blocks
+    # exactly that case with a generic "not authenticated" error (system error 1244) --
+    # this bit it in real-world testing (2026-09-22) before this fix was added.
     $regCmd = "reg add `"HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`" /v BasicAuthLevel /t REG_DWORD /d 2 /f; " +
               "reg add `"HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`" /v UseBasicAuth /t REG_DWORD /d 1 /f; " +
+              "reg add `"HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`" /v AuthForwardServerList /t REG_MULTI_SZ /d `"*`" /f; " +
               "net stop webclient; net start webclient"
     Start-Process powershell -Verb RunAs -Wait -ArgumentList "-NoProfile -Command `"$regCmd`""
 } else {
