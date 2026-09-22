@@ -140,6 +140,10 @@ enum smb2_sec_compat {
 - (BOOL)isConnected;
 
 - (void)doMount;
+- (void)checkForCrashReportToOffer;
+- (void)crashReportSendClicked:(id)sender;
+- (void)crashReportDeclineClicked:(id)sender;
+- (void)sendCrashReport:(NSDictionary *)args;
 - (void)resyncMountedStateFromGroundTruth;
 - (void)mountSucceededWithMessage:(NSString *)message;
 - (void)mountFinishedWithMessage:(NSString *)message;

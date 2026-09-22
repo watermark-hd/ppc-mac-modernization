@@ -12,6 +12,7 @@
 #include <sys/wait.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#include <sys/sysctl.h>
 #include <Security/Security.h>
 
 /* NSString版sprintfの単純な置換ヘルパー(定義は本ファイル下部)。前方宣言。 */
@@ -500,6 +501,106 @@ static NSString *FriendlyConnectError(NSString *raw)
     return [NSString stringWithFormat:L("接続失敗: %@"), raw];
 }
 
+/* ============ クラッシュ報告(依頼者からの依頼、2026-09-22) ============
+   前回終了時にクラッシュしていたら、利用者の明示的な同意がある場合だけ、
+   自社サイト(oldmac.policy-log.jp)にクラッシュログを送る(サーバー側が
+   開発者にメール通知する)。このアプリの他の機能と同じ「勝手に送らない・
+   内容を書き換えない」方針を徹底する: 送信前に必ずログの全文をそのまま
+   見せ、1回ごとに同意を取る。自動送信・裏での送信はしない。
+   送信の成否を利用者にしつこく報告することもしない(ベストエフォート。
+   失敗しても実害は無い、あくまで開発側の助けになれば、という位置づけ)。 */
+
+static NSString *AQCrashLogPath(void)
+{
+    return [NSHomeDirectory() stringByAppendingPathComponent:
+            @"Library/Logs/CrashReporter/AquaLink.crash.log"];
+}
+
+/* "Date/Time:"の出現回数を数える(=記録されているクラッシュ件数)。
+   Tiger/Leopardの実機で確認した通り、CrashReporterはこのアプリのクラッシュを
+   1つのファイルに追記し続ける形式(Snow Leopard以降の「クラッシュごとに
+   別ファイル」とは違う。今回はTiger/Leopardが主対象のためこちらのみ対応)。 */
+static int AQCountCrashEntries(NSString *logContent)
+{
+    if ([logContent length] == 0) {
+        return 0;
+    }
+    NSArray *parts = [logContent componentsSeparatedByString:@"Date/Time:"];
+    return (int)[parts count] - 1;
+}
+
+/* 一番最後(最新)のクラッシュ記録1件分だけを取り出す */
+static NSString *AQExtractLatestCrashBlock(NSString *logContent)
+{
+    NSArray *parts = [logContent componentsSeparatedByString:@"Date/Time:"];
+    if ([parts count] < 2) {
+        return @"";
+    }
+    return [NSString stringWithFormat:@"Date/Time:%@", [parts lastObject]];
+}
+
+/* クラッシュ記録のブロックから、"ラベル:"で始まる1行の値だけを抜き出す簡易
+   パーサ。"OS Version:"と"Version:"のような紛らわしいラベルを混同しない
+   よう、labelWithNewlineには先頭の"\n"を含めて渡すこと(例: "\nVersion:") */
+static NSString *AQExtractCrashField(NSString *block, NSString *labelWithNewline)
+{
+    NSRange r = [block rangeOfString:labelWithNewline];
+    if (r.location == NSNotFound) {
+        return @"";
+    }
+    unsigned start = r.location + r.length;
+    NSRange lineEnd = [block rangeOfString:@"\n" options:0
+                                      range:NSMakeRange(start, [block length] - start)];
+    unsigned end = (lineEnd.location != NSNotFound) ? lineEnd.location : [block length];
+    return [[block substringWithRange:NSMakeRange(start, end - start)]
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+}
+
+/* [実機検証: 2026-09-22] 当初はクラッシュログ本文から"Model:"という行を
+   拾おうとしていたが、実機のCrashReporterログ(Tiger 10.4.11)を確認した
+   ところ、Host Name/Date/Time/OS Version/Report Version/Command/Path/
+   Parent/Version/PID/Threadはあるが、機種名の行はそもそも存在しない
+   ことが判明した(常に空文字になっていたはず)。ログから抜こうとするのを
+   やめ、sysctlで機種本体から直接取得する方式に変更。 */
+static NSString *AQHardwareModel(void)
+{
+    char model[256];
+    size_t size = sizeof(model);
+    if (sysctlbyname("hw.model", model, &size, NULL, 0) != 0) {
+        return @"";
+    }
+    return [NSString stringWithUTF8String:model];
+}
+
+/* application/x-www-form-urlencoded用のパーセントエンコード。Tigerの
+   Foundationには最新のstringByAddingPercentEncodingWithAllowedCharacters:が
+   無く、代わりにあるstringByAddingPercentEscapesUsingEncoding:は
+   "&"/"="/"+"のようなフォーム上意味を持つ文字を素通ししてしまい安全でない
+   (クラッシュログ本文にこれらの文字が出現するのは普通にあり得る)。
+   RFC 3986の「無変換で安全な文字」だけを残し、それ以外は生UTF8バイト単位で
+   %XX にする、自前の確実な実装。 */
+static NSString *AQURLEncode(NSString *s)
+{
+    if ([s length] == 0) {
+        return @"";
+    }
+    const char *utf8 = [s UTF8String];
+    size_t len = strlen(utf8);
+    NSMutableString *result = [NSMutableString stringWithCapacity:len * 3];
+    size_t i;
+    for (i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)utf8[i];
+        BOOL safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                    || c == '-' || c == '_' || c == '.' || c == '~';
+        if (safe) {
+            [result appendFormat:@"%c", c];
+        } else {
+            [result appendFormat:@"%%%02X", c];
+        }
+    }
+    return result;
+}
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note
@@ -870,6 +971,8 @@ static NSString *FriendlyConnectError(NSString *raw)
 
     [self autoStartSharingIfConfigured];
 
+    [self checkForCrashReportToOffer];
+
     /* アプリがアクティブになるたび(Dockクリック・⌘Tab復帰等)に、実際の
        マウント状態を確認して「取り外す」ボタンのずれを直す。Finderから
        直接取り出された場合などにボタンだけが残る不具合の保険。 */
@@ -877,6 +980,192 @@ static NSString *FriendlyConnectError(NSString *raw)
                                               selector:@selector(resyncMountedStateFromGroundTruth)
                                                   name:NSApplicationDidBecomeActiveNotification
                                                 object:nil];
+}
+
+/* 前回終了時のクラッシュ記録を確認し、新しいもの(前回確認した件数より
+   増えている)があれば、送信するかどうかを利用者に聞く。ログの全文を
+   そのままスクロール表示した上での確認で、内容の書き換えは一切しない。
+   送る・送らないに関わらず、確認した件数はここで必ず更新する(同じ
+   クラッシュについて次回また聞かれることはない)。 */
+- (void)checkForCrashReportToOffer
+{
+    NSString *path = AQCrashLogPath();
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        return;
+    }
+    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+    if (content == nil) {
+        content = [NSString stringWithContentsOfFile:path encoding:NSASCIIStringEncoding error:NULL];
+    }
+    if (content == nil) {
+        return;
+    }
+
+    int total = AQCountCrashEntries(content);
+    int lastSeen = [[NSUserDefaults standardUserDefaults] integerForKey:@"AquaLinkLastSeenCrashCount"];
+    if (total <= lastSeen) {
+        return;
+    }
+    /* 送る・送らないの判断より先に確定させる。判断待ちの間にもう一度
+       クラッシュした場合でも、二重に古い記録を送ってしまわないため。 */
+    [[NSUserDefaults standardUserDefaults] setInteger:total forKey:@"AquaLinkLastSeenCrashCount"];
+    [[NSUserDefaults standardUserDefaults] synchronize]; /* 強制終了されても既読件数だけは確実に残す */
+
+    NSString *block = AQExtractLatestCrashBlock(content);
+    if ([block length] == 0) {
+        return;
+    }
+
+    /* [実機検証: 2026-09-22] 当初はNSAlertの-setAccessoryView:でスクロール
+       可能なログ表示を出す予定だったが、このTiger実機(10.4.11)のAppKitには
+       このメソッドが存在せず(respondsToSelector:が0、呼ぶとNSInvalidArgument
+       Exceptionで即座に例外)、コンパイル時の警告("may not respond")は
+       誤検知ではなく実在するAPI欠落だった。例外はAppKit側の既定処理で
+       握りつぶされてアプリ自体は落ちないため、一見動いているように見えて
+       実際はダイアログが一切出ないという厄介な壊れ方をしていた(実機で
+       ウィンドウの有無をAppleScriptから確認して発覚)。
+       NSAlertを諦め、同じファイル内のWindows接続ガイド(windowsGuideWindow)
+       と同じ「自前のNSWindow + runModalForWindow:」方式に置き換える。 */
+    NSRect panelFrame = NSMakeRect(0, 0, 520, 380);
+    NSWindow *panel = [[NSWindow alloc] initWithContentRect:panelFrame
+                                                    styleMask:NSTitledWindowMask
+                                                      backing:NSBackingStoreBuffered
+                                                        defer:NO];
+    [panel setTitle:L("前回終了時に問題が発生したようです")];
+    [panel setReleasedWhenClosed:NO];
+
+    NSTextField *info = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 300, 480, 60)];
+    [info setEditable:NO];
+    [info setBordered:NO];
+    [info setDrawsBackground:NO];
+    [info setFont:[NSFont systemFontOfSize:12]];
+    [[info cell] setWraps:YES];
+    [info setStringValue:L("開発者に送ると、不具合の修正に役立ちます。送信する場合、下に表示されている内容がそのまま送られます(書き換えません)。送らなくても今後の利用に支障はありません。")];
+    [[panel contentView] addSubview:info];
+    [info release];
+
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 60, 480, 230)];
+    [scroll setHasVerticalScroller:YES];
+    [scroll setBorderType:NSBezelBorder];
+    NSTextView *textView = [[NSTextView alloc] initWithFrame:[scroll bounds]];
+    [textView setEditable:NO];
+    [textView setSelectable:YES];
+    [textView setFont:[NSFont fontWithName:@"Monaco" size:10]];
+    [textView setString:block];
+    [textView setAutoresizingMask:NSViewWidthSizable];
+    [textView setVerticallyResizable:YES];
+    [textView setHorizontallyResizable:NO];
+    [scroll setDocumentView:textView];
+    [textView release];
+    [[panel contentView] addSubview:scroll];
+    [scroll release];
+
+    NSButton *sendButton = [[NSButton alloc] initWithFrame:NSMakeRect(330, 15, 170, 32)];
+    [sendButton setTitle:L("送信する")];
+    [sendButton setBezelStyle:NSRoundedBezelStyle];
+    [sendButton setKeyEquivalent:@"\r"];
+    [sendButton setTarget:self];
+    [sendButton setAction:@selector(crashReportSendClicked:)];
+    [[panel contentView] addSubview:sendButton];
+    [sendButton release];
+
+    NSButton *declineButton = [[NSButton alloc] initWithFrame:NSMakeRect(160, 15, 160, 32)];
+    [declineButton setTitle:L("送信しない")];
+    [declineButton setBezelStyle:NSRoundedBezelStyle];
+    [declineButton setTarget:self];
+    [declineButton setAction:@selector(crashReportDeclineClicked:)];
+    [[panel contentView] addSubview:declineButton];
+    [declineButton release];
+
+    [panel center];
+    [panel makeKeyAndOrderFront:nil];
+    int resp = [NSApp runModalForWindow:panel];
+    /* [実機検証: 2026-09-22] ここで[panel release]や[panel close]を
+       (単体でも組み合わせても)実行すると、EXC_BAD_ACCESSで実機クラッシュ
+       することを複数回確認した(症状: -[NSWindow(NSDrag)
+       _registerDragTypes:]がCFRunLoopのタイマー経由(__NSFireDelayedPerform)
+       で後から発火し、その時点で落ちる)。AppKitはウィンドウを表示すると、
+       ドラッグタイプ登録という比較的重い初期化を遅延実行(delayed perform)
+       する。このダイアログは「出してすぐ閉じる」という寿命が短い使い方
+       なので、閉じる/解放する操作がその遅延処理の完了より先に終わって
+       しまうと、後から発火した処理が壊れたウィンドウ状態を触って落ちる、
+       という競合と考えられる。[panel orderOut:nil]を即座に呼ぶだけでも
+       まだ再現した(closeより軽い操作のはずだが、それでも再現時と非再現時が
+       あった=タイミング次第の競合であることを裏付けている)。対策として
+       隠す処理自体を少し遅らせ、遅延登録が確実に完了してから隠すように
+       した。close/releaseは呼ばない(windowsGuideWindowと同じ考え方。
+       起動につき最大1回だけのダイアログなので、リークしても実害はごく
+       わずか)。 */
+    [panel performSelector:@selector(orderOut:) withObject:nil afterDelay:1.0];
+
+    if (resp != 1) {
+        return;
+    }
+
+    NSString *appVersion = AQExtractCrashField(block, @"\nVersion:");
+    NSString *osVersion = AQExtractCrashField(block, @"\nOS Version:");
+    NSString *machine = AQHardwareModel();
+    NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
+                           block, @"log",
+                           appVersion, @"appVersion",
+                           osVersion, @"osVersion",
+                           machine, @"machine", nil];
+    [NSThread detachNewThreadSelector:@selector(sendCrashReport:) toTarget:self withObject:args];
+}
+
+/* checkForCrashReportToOfferの自前モーダルウィンドウのボタン用。
+   runModalForWindow:を1(送信)/0(送信しない)で終わらせるだけ。 */
+- (void)crashReportSendClicked:(id)sender
+{
+    [NSApp stopModalWithCode:1];
+}
+
+- (void)crashReportDeclineClicked:(id)sender
+{
+    [NSApp stopModalWithCode:0];
+}
+
+/* 実際の送信(バックグラウンドスレッド)。自社サイトの/crash-report/submitへ
+   POSTするだけ。送信結果は利用者に報告しない(ベストエフォート)。 */
+- (void)sendCrashReport:(NSDictionary *)args
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+    /* [重大・実機検証済み] このURLはわざと https ではなく http にしている。
+       Tigerの古いOpenSSL/SecureTransportは、Let's Encrypt等の現代的な証明書の
+       署名アルゴリズム(SHA-256系)を認識できず、暗号化(TLSハンドシェイク)自体は
+       成立するのに証明書の検証だけが失敗する(実機のcurlで"unknown message
+       digest algorithm"として再現・確認済み)。10.6以降にある正規の「証明書を
+       検証しない」仕組み(NSURLAuthenticationMethodServerTrust等)や、それより
+       古い非公開API `+[NSURLRequest setAllowsAnyHTTPSCertificateForHost:]`も
+       実機で試したが、NSURLConnectionでは"bad server certificate"のまま
+       解消しなかった(curlとは別の暗号処理を使っているため、curl -kが効いても
+       Cocoa側には効かない)。
+       対策として、サーバー側でこの送信先(/crash-report/submit)だけ暗号化なしの
+       平文httpで直接届くようにした(サイトの他の部分は引き続きhttps強制のまま。
+       詳細はoldmac-webリポジトリのnginx設定参照)。送る内容がクラッシュログ
+       (認証情報等を含まない診断用データ)であり、利用者の明示的な同意があった
+       時だけ送る、という前提でこのトレードオフを許容する。 */
+    NSString *body = [NSString stringWithFormat:
+        @"app=aqualink&app_version=%@&os_version=%@&machine=%@&log=%@",
+        AQURLEncode([args objectForKey:@"appVersion"]),
+        AQURLEncode([args objectForKey:@"osVersion"]),
+        AQURLEncode([args objectForKey:@"machine"]),
+        AQURLEncode([args objectForKey:@"log"])];
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:
+        [NSURL URLWithString:@"http://oldmac.policy-log.jp/crash-report/submit"]];
+    [req setHTTPMethod:@"POST"];
+    [req setValue:@"application/x-www-form-urlencoded; charset=utf-8" forHTTPHeaderField:@"Content-Type"];
+    [req setHTTPBody:[body dataUsingEncoding:NSUTF8StringEncoding]];
+    [req setTimeoutInterval:20.0];
+
+    @try {
+        [NSURLConnection sendSynchronousRequest:req returningResponse:NULL error:NULL];
+    }
+    @catch (NSException *ex) { }
+
+    [pool release];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app
