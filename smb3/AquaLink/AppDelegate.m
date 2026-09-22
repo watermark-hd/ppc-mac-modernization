@@ -3159,6 +3159,18 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [content addSubview:sharePortField];
         [sharePortField release];
 
+        /* [2026-09-22追加] HTTPS(暗号化)。既定OFF(新機能のため段階的ロール
+           アウト)。オンにすると自己署名証明書でTLS化される。初回接続時に
+           相手側のOS標準の証明書警告が出るのが仕様(信頼すれば以後は出ない)。 */
+        shareHTTPSCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(210, h - 289, 260, 22)];
+        [shareHTTPSCheckbox setButtonType:NSSwitchButton];
+        [shareHTTPSCheckbox setTitle:L("HTTPS(暗号化・実験的)")];
+        [shareHTTPSCheckbox setState:(shareUseHTTPS ? NSOnState : NSOffState)];
+        [shareHTTPSCheckbox setTarget:self];
+        [shareHTTPSCheckbox setAction:@selector(shareHTTPSCheckboxToggled:)];
+        [content addSubview:shareHTTPSCheckbox];
+        [shareHTTPSCheckbox release];
+
         shareStartButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, h - 328, 140, 26)];
         [shareStartButton setTitle:(sharing ? L("共有停止") : L("共有開始"))];
         [shareStartButton setBezelStyle:NSRoundedBezelStyle];
@@ -3175,14 +3187,16 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [content addSubview:windowsGuideButton];
         [windowsGuideButton release];
 
-        NSTextField *shareWarningLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 88, w - 20, 34)];
+        shareWarningLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 88, w - 20, 34)];
         [shareWarningLabel setEditable:NO];
         [shareWarningLabel setBezeled:NO];
         [shareWarningLabel setDrawsBackground:NO];
         [[shareWarningLabel cell] setWraps:YES];
         [shareWarningLabel setFont:[NSFont systemFontOfSize:10]];
         [shareWarningLabel setTextColor:[NSColor darkGrayColor]];
-        [shareWarningLabel setStringValue:L("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。")];
+        [shareWarningLabel setStringValue:(shareUseHTTPS
+            ? L("⚠️ LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。")
+            : L("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"))];
         [content addSubview:shareWarningLabel];
         [shareWarningLabel release];
 
@@ -3253,6 +3267,16 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     [self saveShareSettings];
 }
 
+/* [2026-09-22追加] HTTPSチェックボックスの状態が変わるたびに、下の警告文言も
+   即座に切り替える(平文HTTPの警告のまま固定にならないように)。 */
+- (void)shareHTTPSCheckboxToggled:(id)sender
+{
+    BOOL on = ([shareHTTPSCheckbox state] == NSOnState);
+    [shareWarningLabel setStringValue:(on
+        ? L("⚠️ LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。")
+        : L("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"))];
+}
+
 - (void)toggleSharingAction:(id)sender
 {
     if (sharing) {
@@ -3283,6 +3307,7 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     if (sharePortValue <= 0) {
         sharePortValue = 8091;
     }
+    shareUseHTTPS = ([shareHTTPSCheckbox state] == NSOnState);
     [self saveShareSettings];
 
     [shareStartButton setEnabled:NO];
@@ -3297,7 +3322,8 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 
     NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
                            sharesDict, @"shares", user, @"user", pass, @"pass",
-                           [NSNumber numberWithInt:sharePortValue], @"port", nil];
+                           [NSNumber numberWithInt:sharePortValue], @"port",
+                           [NSNumber numberWithBool:shareUseHTTPS], @"useTLS", nil];
     [NSThread detachNewThreadSelector:@selector(doStartSharing:) toTarget:self withObject:args];
 }
 
@@ -3461,8 +3487,9 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     if (port <= 0) {
         port = 8091;
     }
+    BOOL useTLS = [[args objectForKey:@"useTLS"] boolValue];
 
-    LocalWebDAVServer *server = [[LocalWebDAVServer alloc] initWithShares:sharesDict user:user password:pass];
+    LocalWebDAVServer *server = [[LocalWebDAVServer alloc] initWithShares:sharesDict user:user password:pass useTLS:useTLS];
     BOOL started = NO;
     int attempt;
     int p = port;
@@ -3478,9 +3505,10 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     if (started) {
         localWebDAVServer = server;
         NSString *ip = GetLocalIPAddress();
+        NSString *scheme = useTLS ? @"https" : @"http";
         message = [NSString stringWithFormat:
-                   L("共有中です(%d フォルダ)。他の機器から下記へ接続してください:\nhttp://%@:%d/ (ユーザー名/パスワードが必要)"),
-                   (int)[sharesDict count], ip, p];
+                   L("共有中です(%d フォルダ)。他の機器から下記へ接続してください:\n%@://%@:%d/ (ユーザー名/パスワードが必要)"),
+                   (int)[sharesDict count], scheme, ip, p];
     } else {
         [server release];
         message = L("共有の開始に失敗しました(ポートを確保できません)");
@@ -3542,6 +3570,7 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [defaults setObject:shareUser forKey:@"AquaLinkShareUser"];
     }
     [defaults setInteger:sharePortValue forKey:@"AquaLinkSharePort"];
+    [defaults setBool:shareUseHTTPS forKey:@"AquaLinkShareUseHTTPS"];
     [defaults synchronize];
 
     if ([sharePassword length] > 0) {
@@ -3569,6 +3598,8 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 
     int savedPort = [defaults integerForKey:@"AquaLinkSharePort"];
     sharePortValue = (savedPort > 0) ? savedPort : 8091;
+
+    shareUseHTTPS = [defaults boolForKey:@"AquaLinkShareUseHTTPS"];
 
     [sharePassword release];
     sharePassword = [LoadKeychainPassword(KEYCHAIN_SERVICE_SHARE, KEYCHAIN_ACCOUNT_SHARE) retain];
@@ -3599,7 +3630,8 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 
     NSDictionary *args = [NSDictionary dictionaryWithObjectsAndKeys:
                            sharesDict, @"shares", shareUser, @"user", sharePassword, @"pass",
-                           [NSNumber numberWithInt:sharePortValue], @"port", nil];
+                           [NSNumber numberWithInt:sharePortValue], @"port",
+                           [NSNumber numberWithBool:shareUseHTTPS], @"useTLS", nil];
     [NSThread detachNewThreadSelector:@selector(doStartSharing:) toTarget:self withObject:args];
 }
 

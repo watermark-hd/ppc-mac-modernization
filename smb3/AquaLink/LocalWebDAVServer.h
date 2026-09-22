@@ -17,9 +17,17 @@
        レート制限。詳細はrecordAuthFailureForIP:/isRateLimitedForIP:参照 */
     NSMutableDictionary *authFailureCounts; /* { IP(NSString) : {count, windowStart} } */
     NSLock *authFailureLock; /* 複数の接続スレッドから同時に触られるため */
+
+    /* [2026-09-22追加] HTTPS(TLS)対応。ヘッダーにOpenSSLの型を持ち込みたく
+       ないため、実体はSSL_CTX*だがvoid*として保持する(.mファイル側だけが
+       <openssl/ssl.h>をimportする)。 */
+    BOOL useTLS;
+    void *sslCtx;                    /* 実体: SSL_CTX* */
+    NSMutableDictionary *tlsConnections; /* { fd(NSNumber) : SSL*を包んだNSValue } */
+    NSLock *tlsConnectionsLock;
 }
 
-- (id)initWithShares:(NSDictionary *)sharesDict user:(NSString *)user password:(NSString *)password;
+- (id)initWithShares:(NSDictionary *)sharesDict user:(NSString *)user password:(NSString *)password useTLS:(BOOL)tls;
 - (BOOL)startOnPort:(int)p;
 - (void)stop;
 - (int)port;
@@ -50,5 +58,10 @@
 - (void)handleDELETE:(NSString *)path toSocket:(int)fd;
 - (void)handleMKCOL:(NSString *)path toSocket:(int)fd;
 - (void)handleLOCK:(NSString *)path toSocket:(int)fd;
+
+/* [2026-09-22追加] HTTPS対応 */
+- (BOOL)loadOrCreateCertificateAndKey;
+- (int)aq_readSocket:(int)fd buffer:(void *)buf length:(int)len;
+- (int)aq_writeSocket:(int)fd buffer:(const void *)buf length:(int)len;
 
 @end

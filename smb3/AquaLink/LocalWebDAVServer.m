@@ -12,6 +12,12 @@
 #include <stdlib.h>
 #include <CommonCrypto/CommonDigest.h>
 
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+
 #define UTF8(cstr) [NSString stringWithUTF8String:(cstr)]
 
 static NSString *MD5Hex(NSString *input)
@@ -172,9 +178,87 @@ static NSData *Base64Decode(NSString *input)
     return out;
 }
 
+/* [2026-09-22追加] 証明書+秘密鍵の保存先。NSUserDefaultsではなく実ファイルに
+   するのは、OpenSSLのPEM読み書きAPIがファイルベースだから。既存の設定保存が
+   このディレクトリを使っていなかったので新設した。 */
+static NSString *AQTLSSupportDir(void)
+{
+    NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:
+                      @"Library/Application Support/AquaLink"];
+    /* [実機検証: 2026-09-22] createDirectoryAtPath:withIntermediateDirectories:
+       attributes:error: はLeopard(10.5)以降のAPIで、このTiger実機の
+       Foundationにはやはり存在しないことをrespondsToSelector:で確認済み
+       (今日のNSAlert setAccessoryView:と同種の罠)。Tiger互換の旧API
+       (中間ディレクトリ非対応・NSError無し)を使う。"Library/Application
+       Support"自体は実機に既に存在するので、最後の1階層だけ作れれば足りる。
+       このプロジェクトの他の箇所(AppDelegate.m内のマウントポイント作成)でも
+       同じ旧APIが使われている。 */
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir attributes:nil];
+    return dir;
+}
+
+static NSString *AQTLSCertPath(void)
+{
+    return [AQTLSSupportDir() stringByAppendingPathComponent:@"tls-cert.pem"];
+}
+
+static NSString *AQTLSKeyPath(void)
+{
+    return [AQTLSSupportDir() stringByAppendingPathComponent:@"tls-key.pem"];
+}
+
+/* 自己署名証明書+RSA鍵を新規生成し、PEMファイルとして保存する。呼ぶのは
+   証明書がまだ無い初回だけ(2回目以降は保存済みのものを読み込んで使い回す。
+   毎回作り直すと、Finder側で一度信頼した証明書がそのたびに無効になり、
+   起動のたびに警告が出てしまうため)。 */
+static BOOL AQGenerateAndSaveCertificate(void)
+{
+    BOOL ok = NO;
+    RSA *rsa = RSA_generate_key(2048, RSA_F4, NULL, NULL);
+    if (rsa == NULL) {
+        return NO;
+    }
+    EVP_PKEY *pkey = EVP_PKEY_new();
+    EVP_PKEY_assign_RSA(pkey, rsa); /* 以後pkeyがrsaの所有権を持つ */
+
+    X509 *x509 = X509_new();
+    ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
+    X509_gmtime_adj(X509_get_notBefore(x509), 0);
+    X509_gmtime_adj(X509_get_notAfter(x509), 60L * 60 * 24 * 3650); /* 10年 */
+    X509_set_pubkey(x509, pkey);
+    X509_NAME *name = X509_get_subject_name(x509);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                (unsigned char *)"AquaLink", -1, -1, 0);
+    X509_set_issuer_name(x509, name);
+    X509_sign(x509, pkey, EVP_sha256());
+
+    FILE *keyFile = fopen([AQTLSKeyPath() UTF8String], "w");
+    if (keyFile) {
+        if (PEM_write_PrivateKey(keyFile, pkey, NULL, NULL, 0, NULL, NULL) == 1) {
+            ok = YES;
+        }
+        fclose(keyFile);
+        /* 秘密鍵なので所有者以外読めないようにする */
+        chmod([AQTLSKeyPath() UTF8String], S_IRUSR | S_IWUSR);
+    }
+    FILE *certFile = fopen([AQTLSCertPath() UTF8String], "w");
+    if (certFile) {
+        if (PEM_write_X509(certFile, x509) != 1) {
+            ok = NO;
+        }
+        fclose(certFile);
+    } else {
+        ok = NO;
+    }
+
+    X509_free(x509);
+    EVP_PKEY_free(pkey); /* rsaもこれで一緒に解放される */
+    return ok;
+}
+
 @implementation LocalWebDAVServer
 
-- (id)initWithShares:(NSDictionary *)sharesDict user:(NSString *)user password:(NSString *)password
+- (id)initWithShares:(NSDictionary *)sharesDict user:(NSString *)user password:(NSString *)password useTLS:(BOOL)tls
 {
     self = [super init];
     if (self) {
@@ -186,8 +270,41 @@ static NSData *Base64Decode(NSString *input)
         port = 0;
         authFailureCounts = [[NSMutableDictionary alloc] init];
         authFailureLock = [[NSLock alloc] init];
+        useTLS = tls;
+        sslCtx = NULL;
+        tlsConnections = [[NSMutableDictionary alloc] init];
+        tlsConnectionsLock = [[NSLock alloc] init];
     }
     return self;
+}
+
+/* 証明書+鍵が保存済みならそれを読み込み、無ければ新規生成する。
+   startOnPort:からuseTLSの時だけ呼ばれる。 */
+- (BOOL)loadOrCreateCertificateAndKey
+{
+    if (![[NSFileManager defaultManager] fileExistsAtPath:AQTLSCertPath()] ||
+        ![[NSFileManager defaultManager] fileExistsAtPath:AQTLSKeyPath()]) {
+        if (!AQGenerateAndSaveCertificate()) {
+            return NO;
+        }
+    }
+
+    sslCtx = SSL_CTX_new(SSLv23_server_method());
+    if (sslCtx == NULL) {
+        return NO;
+    }
+    /* 現代のクライアント(Finder等)は普通TLS1.2以上で繋いでくるが、古い
+       SSLv2/SSLv3だけは既知の脆弱性があるため明示的に禁止する。
+       TLS1.0/1.1は互換性のため許可のままにしておく。 */
+    SSL_CTX_set_options((SSL_CTX *)sslCtx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+
+    if (SSL_CTX_use_certificate_file((SSL_CTX *)sslCtx, [AQTLSCertPath() UTF8String], SSL_FILETYPE_PEM) != 1) {
+        return NO;
+    }
+    if (SSL_CTX_use_PrivateKey_file((SSL_CTX *)sslCtx, [AQTLSKeyPath() UTF8String], SSL_FILETYPE_PEM) != 1) {
+        return NO;
+    }
+    return YES;
 }
 
 - (int)port
@@ -197,6 +314,14 @@ static NSData *Base64Decode(NSString *input)
 
 - (BOOL)startOnPort:(int)p
 {
+    if (useTLS) {
+        SSL_library_init();
+        SSL_load_error_strings();
+        if (![self loadOrCreateCertificateAndKey]) {
+            return NO;
+        }
+    }
+
     listenFd = socket(AF_INET, SOCK_STREAM, 0);
     if (listenFd < 0) {
         return NO;
@@ -234,6 +359,10 @@ static NSData *Base64Decode(NSString *input)
     if (listenFd >= 0) {
         close(listenFd);
         listenFd = -1;
+    }
+    if (sslCtx != NULL) {
+        SSL_CTX_free((SSL_CTX *)sslCtx);
+        sslCtx = NULL;
     }
 }
 
@@ -416,6 +545,26 @@ static NSData *Base64Decode(NSString *input)
         return;
     }
 
+    /* [2026-09-22追加] HTTPS有効時は、リクエストを読む前にまずTLSハンド
+       シェイクを完了させる。成立したSSL*はfd番号をキーにした対応表に
+       登録し、以後の低レベル送受信(aq_readSocket:/aq_writeSocket:)から
+       参照する。この接続処理は元々専用スレッドで動くので、ここで
+       ハンドシェイクにかかる時間(RSA計算を含む)を使っても他の接続を
+       ブロックしない。 */
+    if (useTLS) {
+        SSL *ssl = SSL_new((SSL_CTX *)sslCtx);
+        SSL_set_fd(ssl, fd);
+        if (SSL_accept(ssl) != 1) {
+            SSL_free(ssl);
+            close(fd);
+            [pool release];
+            return;
+        }
+        [tlsConnectionsLock lock];
+        [tlsConnections setObject:[NSValue valueWithPointer:ssl] forKey:[NSNumber numberWithInt:fd]];
+        [tlsConnectionsLock unlock];
+    }
+
     NSString *method = nil;
     NSString *path = nil;
     NSDictionary *headers = nil;
@@ -455,6 +604,19 @@ static NSData *Base64Decode(NSString *input)
         }
     }
 
+    if (useTLS) {
+        [tlsConnectionsLock lock];
+        NSNumber *key = [NSNumber numberWithInt:fd];
+        NSValue *boxed = [tlsConnections objectForKey:key];
+        if (boxed != nil) {
+            SSL *ssl = (SSL *)[boxed pointerValue];
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            [tlsConnections removeObjectForKey:key];
+        }
+        [tlsConnectionsLock unlock];
+    }
+
     close(fd);
     [pool release];
 }
@@ -470,7 +632,7 @@ static NSData *Base64Decode(NSString *input)
     long headerEnd = -1;
 
     while (headerEnd < 0) {
-        int n = recv(fd, chunk, sizeof(chunk), 0);
+        int n = [self aq_readSocket:fd buffer:chunk length:sizeof(chunk)];
         if (n <= 0) {
             return NO;
         }
@@ -537,7 +699,7 @@ static NSData *Base64Decode(NSString *input)
         [bodyData appendBytes:(((const uint8_t *)[buf bytes]) + bodyStart) length:alreadyRead];
     }
     while ((long)[bodyData length] < contentLength) {
-        int n = recv(fd, chunk, sizeof(chunk), 0);
+        int n = [self aq_readSocket:fd buffer:chunk length:sizeof(chunk)];
         if (n <= 0) {
             break;
         }
@@ -551,6 +713,46 @@ static NSData *Base64Decode(NSString *input)
     return YES;
 }
 
+/* [2026-09-22追加] 低レベル送受信の共通口。fdがTLS接続として登録されて
+   いればSSL_read/SSL_write、そうでなければ従来通りのrecv/sendにフォール
+   バックする。この2つのメソッドだけがソケットの生I/Oを直接触るように
+   なっているので、呼び出し側(readRequestFromSocket:/sendBytes:toSocket:
+   /handleGET:等)は"toSocket:fd"という既存のシグネチャのまま一切変更せずに
+   済んでいる。 */
+- (int)aq_readSocket:(int)fd buffer:(void *)buf length:(int)len
+{
+    if (useTLS) {
+        SSL *ssl = NULL;
+        [tlsConnectionsLock lock];
+        NSValue *boxed = [tlsConnections objectForKey:[NSNumber numberWithInt:fd]];
+        if (boxed != nil) {
+            ssl = (SSL *)[boxed pointerValue];
+        }
+        [tlsConnectionsLock unlock];
+        if (ssl != NULL) {
+            return SSL_read(ssl, buf, len);
+        }
+    }
+    return (int)recv(fd, buf, len, 0);
+}
+
+- (int)aq_writeSocket:(int)fd buffer:(const void *)buf length:(int)len
+{
+    if (useTLS) {
+        SSL *ssl = NULL;
+        [tlsConnectionsLock lock];
+        NSValue *boxed = [tlsConnections objectForKey:[NSNumber numberWithInt:fd]];
+        if (boxed != nil) {
+            ssl = (SSL *)[boxed pointerValue];
+        }
+        [tlsConnectionsLock unlock];
+        if (ssl != NULL) {
+            return SSL_write(ssl, buf, len);
+        }
+    }
+    return (int)send(fd, buf, len, 0);
+}
+
 /* ============ レスポンス送信 ============ */
 
 - (void)sendBytes:(NSData *)data toSocket:(int)fd
@@ -559,7 +761,7 @@ static NSData *Base64Decode(NSString *input)
     long length = (long)[data length];
     long sent = 0;
     while (sent < length) {
-        int n = send(fd, bytes + sent, length - sent, 0);
+        int n = [self aq_writeSocket:fd buffer:(bytes + sent) length:(int)(length - sent)];
         if (n <= 0) {
             break;
         }
@@ -1009,6 +1211,8 @@ static NSData *Base64Decode(NSString *input)
     [authPassword release];
     [authFailureCounts release];
     [authFailureLock release];
+    [tlsConnections release];
+    [tlsConnectionsLock release];
     [super dealloc];
 }
 

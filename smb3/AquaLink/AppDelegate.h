@@ -69,6 +69,8 @@ enum smb2_sec_compat {
     NSTextField *shareUserField;
     NSSecureTextField *sharePasswordField;
     NSTextField *sharePortField;
+    NSButton *shareHTTPSCheckbox;  /* [2026-09-22追加] HTTPS(暗号化)。既定OFF */
+    NSTextField *shareWarningLabel; /* HTTPSのオン/オフで文言が変わる */
     NSButton *shareStartButton;
     NSButton *windowsGuideButton;
     NSTextField *shareStatusLabel;
@@ -83,6 +85,7 @@ enum smb2_sec_compat {
     NSString *shareUser;
     NSString *sharePassword;
     int sharePortValue;
+    BOOL shareUseHTTPS;
 }
 
 - (void)connectAction:(id)sender;
@@ -109,6 +112,7 @@ enum smb2_sec_compat {
 - (void)removeFolderAction:(id)sender;
 - (void)toggleSharingAction:(id)sender;
 - (void)showWindowsGuideAction:(id)sender;
+- (void)shareHTTPSCheckboxToggled:(id)sender;
 - (void)doStartSharing:(NSDictionary *)args;
 - (void)sharingStartedWithMessage:(NSString *)message;
 - (void)doStopSharing;
