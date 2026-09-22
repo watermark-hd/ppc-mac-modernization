@@ -16,14 +16,24 @@ LIBSMB2_A ?= $(firstword \
     $(wildcard $(LIBSMB2_DIR)/lib/.libs/libsmb2.a) \
     $(LIBSMB2_DIR)/lib/.libs/libsmb2.a)
 
-# 「iBookをNAS化する」共有機能のHTTPS対応で使うOpenSSL。MacPortsは導入せず、
-# libsmb2と同じくソースを直接./Configure && makeした静的ライブラリを使う
-# (OpenSSL 3.xはTigerのPerl 5.8.6ではConfigureが動かないため、1.0.2系を使用。
-# 詳細はsmb3/README.md参照)。
+# 「iBookをNAS化する」共有機能のHTTPS対応で使うOpenSSL。LIBSMB2_A同様、
+# よくあるレイアウトを順に探す: 手元でソースを直接./Configure && makeした
+# 場合(ビルドツリー直下にlibssl.a/libcrypto.aができる。OpenSSL 3.xはTigerの
+# Perl 5.8.6ではConfigureが動かないため、手元では1.0.2系を使用。詳細は
+# smb3/README.md参照)と、PPCPorts等でインストール済みのprefix
+# ($(OPENSSL_DIR)/lib/libssl.dylib や libssl.a)の両方に対応する。
 OPENSSL_DIR ?= $(HOME)/developer/openssl
 OPENSSL_INC ?= $(OPENSSL_DIR)/include
-OPENSSL_SSL_A ?= $(OPENSSL_DIR)/libssl.a
-OPENSSL_CRYPTO_A ?= $(OPENSSL_DIR)/libcrypto.a
+OPENSSL_SSL_A ?= $(firstword \
+    $(wildcard $(OPENSSL_DIR)/lib/libssl.dylib) \
+    $(wildcard $(OPENSSL_DIR)/lib/libssl.a) \
+    $(wildcard $(OPENSSL_DIR)/libssl.a) \
+    $(OPENSSL_DIR)/libssl.a)
+OPENSSL_CRYPTO_A ?= $(firstword \
+    $(wildcard $(OPENSSL_DIR)/lib/libcrypto.dylib) \
+    $(wildcard $(OPENSSL_DIR)/lib/libcrypto.a) \
+    $(wildcard $(OPENSSL_DIR)/libcrypto.a) \
+    $(OPENSSL_DIR)/libcrypto.a)
 
 # システム側(/System/Library/Frameworks)のCocoaヘッダーが実際に見つかる場合は
 # 何もせず、今まで通りシステムのヘッダーをそのまま使う(大多数の環境ではこちら)。
