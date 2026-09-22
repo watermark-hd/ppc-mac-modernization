@@ -44,23 +44,37 @@ $DriveLetter = "Z:"
 Write-Host ""
 
 # 1. WebClient Basic auth settings (allow Basic auth over plain HTTP)
+#
+# [2026-09-22] AuthForwardServerList: WebClient refuses to send Basic-auth
+# credentials to a server unless a URL pattern for it is on this list. Real-
+# world testing initially used a bare "*" here, which is NOT the documented
+# wildcard syntax and did not fix the "not authenticated" error (system
+# error 1244) at all. Per Microsoft's own docs (KB941050 / "Using the WebDAV
+# Redirector"), entries must be URL patterns like "http://server" or
+# "*.domain.com" -- explicitly WITHOUT a port number -- and a lone "*" isn't
+# one of the documented forms. Fixed to add "http://$ServerName" (no port),
+# appended to whatever's already there rather than replacing it, so
+# connecting to more than one AquaLink share under different names doesn't
+# clobber earlier entries.
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
 $authForwardList = (Get-ItemProperty -Path $regPath -Name "AuthForwardServerList" -ErrorAction SilentlyContinue).AuthForwardServerList
-$hasWildcardForward = ($null -ne $authForwardList) -and ($authForwardList -contains "*")
-$needReg = -not ((Test-RegistryValue $regPath "BasicAuthLevel" 2) -and (Test-RegistryValue $regPath "UseBasicAuth" 1) -and $hasWildcardForward)
+$authEntry = "http://$ServerName"
+$hasAuthEntry = ($null -ne $authForwardList) -and ($authForwardList -contains $authEntry)
+$needReg = -not ((Test-RegistryValue $regPath "BasicAuthLevel" 2) -and (Test-RegistryValue $regPath "UseBasicAuth" 1) -and $hasAuthEntry)
 
 if ($needReg) {
     Write-Host "First-time setup: registry change needed (an admin approval popup will appear)..." -ForegroundColor Yellow
-    # AuthForwardServerList: WebClient refuses to send Basic auth credentials to any
-    # server unless it's on this allow-list. AquaLink normally listens on a non-standard
-    # port (8091 by default, not 80), and WebClient's default behavior otherwise blocks
-    # exactly that case with a generic "not authenticated" error (system error 1244) --
-    # this bit it in real-world testing (2026-09-22) before this fix was added.
-    $regCmd = "reg add `"HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`" /v BasicAuthLevel /t REG_DWORD /d 2 /f; " +
-              "reg add `"HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`" /v UseBasicAuth /t REG_DWORD /d 1 /f; " +
-              "reg add `"HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters`" /v AuthForwardServerList /t REG_MULTI_SZ /d `"*`" /f; " +
-              "net stop webclient; net start webclient"
-    Start-Process powershell -Verb RunAs -Wait -ArgumentList "-NoProfile -Command `"$regCmd`""
+    $newAuthList = @($authForwardList) + $authEntry | Where-Object { $_ } | Select-Object -Unique
+    $authListLiteral = ($newAuthList | ForEach-Object { "'$_'" }) -join ","
+    $tempScript = Join-Path $env:TEMP "aqualink-webclient-fix.ps1"
+    @"
+Set-ItemProperty -Path '$regPath' -Name 'BasicAuthLevel' -Type DWord -Value 2
+Set-ItemProperty -Path '$regPath' -Name 'UseBasicAuth' -Type DWord -Value 1
+Set-ItemProperty -Path '$regPath' -Name 'AuthForwardServerList' -Type MultiString -Value @($authListLiteral)
+Restart-Service WebClient -Force
+"@ | Set-Content -Path $tempScript -Encoding UTF8
+    Start-Process powershell -Verb RunAs -Wait -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
+    Remove-Item -Path $tempScript -ErrorAction SilentlyContinue
 } else {
     Write-Host "Registry: already OK" -ForegroundColor Green
 }

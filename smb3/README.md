@@ -955,15 +955,54 @@ AquaLinkは既定で80番ではない非標準ポート(8091)で待ち受けて�
 許可リストが未設定だと確実にこの1244エラーになる。エラーメッセージ自体は
 「認証されていない」としか言わず、ポートが原因だとは分からない。
 
-**対策:** `setup-aqualink.ps1`の既存の昇格済みレジストリ変更ブロック
-(`BasicAuthLevel`/`UseBasicAuth`を設定している箇所)に、
-`AuthForwardServerList`(REG_MULTI_SZ)へ`*`を追加する行を足し、同じ
-`net stop/start webclient`で反映されるようにした。これはこの1台固有の
-問題ではなく、**AquaLinkの既定ポート(8091)を使う限り、Windows側の初回
-接続では原理的に必ず踏む問題**だったため、スクリプト自体の不具合として
-修正し、`AquaLink配布/AquaLink-windows-setup.zip`も更新した。
+**対策(初版、誤り):** `setup-aqualink.ps1`の既存の昇格済みレジストリ変更
+ブロックに、`AuthForwardServerList`(REG_MULTI_SZ)へ**`*`単体**を追加する
+行を最初に足したが、**これは公式ドキュメントの書式に沿っておらず、実機で
+試しても1244エラーは解消しなかった**。
 
-なお、この症状が出た際にもう一つ、`connect-aqualink.bat`自体がWindows
+**正しい対策:** Microsoft公式ドキュメント(KB941050、および
+[Using the WebDAV Redirector](https://learn.microsoft.com/en-us/iis/publish/using-webdav/using-the-webdav-redirector))
+を調べ直した結果、`AuthForwardServerList`は「ポート番号を含まないURL
+パターン」のリストである必要があり、`*`単体はその書式に含まれないと
+判明した。正しい例: `http://server`、`*.domain.com`、`https://172.169.4.6`。
+**ポート番号を含めてはいけない**(公式ドキュメントに明記: `http://*dns.
+live.com:80`のような書き方は避けること、とある)。
+
+`setup-aqualink.ps1`を、`http://$ServerName`(ポート無し)をこのリストに
+**追加**する(既存のエントリを上書きしない。複数のAquaLink共有に別名で
+繋ぐケースを想定)方式に修正した。レジストリ書き込み自体も、`reg.exe`の
+コマンドライン経由(REG_MULTI_SZ の複数値指定がエスケープで壊れやすい)
+から、一時的な昇格済みスクリプトファイルを作って`Set-ItemProperty`で
+書く方式に変更し、実際に生成されるスクリプトの中身を手元の`pwsh`で
+構文チェック・実行結果の目視確認までしてから配布した。
+
+これはこの1台固有の問題ではなく、**AquaLinkの既定ポート(8091)を使う限り、
+Windows側の初回接続では原理的に必ず踏む問題**だったため、スクリプト自体の
+不具合として修正し、`AquaLink配布/AquaLink-windows-setup.zip`も更新した。
+
+## windows-setup: hostsファイルの部分一致誤判定とポート指定漏れ(system error 67)
+
+`connect-aqualink.bat`のサーバー名の「既に設定済みか」の判定が
+`Select-String -Pattern $ServerName`という**部分一致**の検索になっており、
+`aqualink`という名前を入力しても、hostsファイルに既にある`aqualink-nas`
+などの中に部分文字列として含まれているため「もう設定済み」と誤判定され、
+実際のエントリが追加されないまま`net use`が「システムエラー67が発生
+しました。ネットワーク名が見つかりません。」で失敗する事象が実機で発生した。
+
+加えて、`net use`のUNCパス(`\\サーバー名\DavWWWRoot\共有名`)は指定が無いと
+常に80番ポートを見に行く仕様で、スクリプトにはそもそもポート番号を
+渡す仕組みが無かった(AquaLinkの既定ポート8091を指定できず、常に無いポート
+=80番を探しに行っていた)。
+
+**対策:** ①hostsファイルの判定を、IPとサーバー名の完全一致(部分一致ではない)
+に変更し、古いIPのまま残っている同名エントリがあれば置き換える方式にした
+(実際の実機のhostsファイル内容を使って手元の`pwsh`でロジックを再現・
+検証済み)。②スクリプトにポート番号の入力欄(既定8091)を追加し、
+`\\サーバー名@ポート番号\DavWWWRoot\共有名`という、非標準ポートのWebDAV
+接続に必要な`@ポート番号`形式のUNCパスに修正した。AppDelegate.mの
+「Windows用接続ガイド」の案内文(日英両方)にもポート番号の手順を追記した。
+
+なお、この一連の症状が出た際にもう一つ、`connect-aqualink.bat`自体がWindows
 11の**スマートアプリコントロール**にブロックされ、「どのアプリを使用
 しますか」という表示になる事象も先に発生した。対処は`.bat`ファイルを
 右クリック→プロパティ→「許可する」にチェック(Mark of the Webの解除)。
