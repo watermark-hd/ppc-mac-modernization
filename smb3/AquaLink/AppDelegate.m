@@ -91,7 +91,8 @@ static NSDictionary *EnglishTranslations(void)
             @"Password entry was cancelled", UTF8("パスワード入力がキャンセルされました"),
             @"Privileged umount failed", UTF8("管理者権限でのumountに失敗しました"),
             @"Share This Mac (as NAS)", UTF8("このMacを共有(NAS化)"),
-            @"⚠️ LAN use only. Passwords are sent unencrypted (plain HTTP). Do not expose this to the internet (e.g. via router port forwarding).", UTF8("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"),
+            @"LAN use only. Passwords are sent unencrypted (plain HTTP). Do not expose this to the internet (e.g. via router port forwarding).", UTF8("LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"),
+            @"LAN use only. Encrypted via HTTPS, but the certificate is self-signed (you'll see a warning when connecting). Do not expose this to the internet (e.g. via router port forwarding).", UTF8("LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。"),
             @"Shared Folders:", UTF8("共有フォルダ一覧:"),
             @"Folder Path", UTF8("フォルダパス"),
             @"Username:", UTF8("ユーザー名:"),
@@ -3195,8 +3196,8 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [shareWarningLabel setFont:[NSFont systemFontOfSize:10]];
         [shareWarningLabel setTextColor:[NSColor darkGrayColor]];
         [shareWarningLabel setStringValue:(shareUseHTTPS
-            ? L("⚠️ LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。")
-            : L("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"))];
+            ? L("LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。")
+            : L("LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"))];
         [content addSubview:shareWarningLabel];
         [shareWarningLabel release];
 
@@ -3273,8 +3274,8 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 {
     BOOL on = ([shareHTTPSCheckbox state] == NSOnState);
     [shareWarningLabel setStringValue:(on
-        ? L("⚠️ LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。")
-        : L("⚠️ LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"))];
+        ? L("LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。")
+        : L("LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"))];
 }
 
 - (void)toggleSharingAction:(id)sender
@@ -3365,10 +3366,13 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             "　　名前が衝突していると繋がらないことがあります):\n"
             "　　例) aqualink-mac\n\n")];
 
+        [text appendFormat:UTF8("　③ポート番号(このAquaLinkの共有設定画面の「ポート」欄と同じ数字。\n"
+                                 "　　何も入力せずEnterを押すと既定値の8091になります):\n　　%d\n\n"), sharePortValue];
+
         if ([shareFolders count] == 0) {
-            [text appendString:UTF8("　③共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
+            [text appendString:UTF8("　④共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
         } else {
-            [text appendString:UTF8("　③共有名(共有フォルダが複数ある場合、繋ぎたいものを1つ選んで入力してください):\n")];
+            [text appendString:UTF8("　④共有名(共有フォルダが複数ある場合、繋ぎたいものを1つ選んで入力してください):\n")];
             NSEnumerator *e = [shareFolders objectEnumerator];
             NSDictionary *f;
             while ((f = [e nextObject])) {
@@ -3378,9 +3382,9 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             [text appendString:@"\n"];
         }
 
-        [text appendString:UTF8("　④ユーザー名:\n　　この画面の「共有設定」で決めたユーザー名を入力してください(例: yamada)。\n\n")];
+        [text appendString:UTF8("　⑤ユーザー名:\n　　この画面の「共有設定」で決めたユーザー名を入力してください(例: yamada)。\n\n")];
         [text appendString:UTF8(
-            "　⑤パスワード:\n"
+            "　⑥パスワード:\n"
             "　　共有設定で決めたパスワードを入力してください(画面には表示されません)。\n"
             "　　パソコンのログインパスワードをそのまま使っている方も多いです。\n\n")];
 
@@ -3416,10 +3420,13 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             "   a name collision can prevent connecting):\n"
             "   e.g. aqualink-mac\n\n")];
 
+        [text appendFormat:UTF8("  3) Port number (same as the \"Port\" field on this AquaLink's Share\n"
+                                 "   Settings screen. Just press Enter for the default, 8091):\n   %d\n\n"), sharePortValue];
+
         if ([shareFolders count] == 0) {
-            [text appendString:UTF8("  3) Share name:\n   (No shared folders have been added yet. Add one with the \"+\" above.)\n\n")];
+            [text appendString:UTF8("  4) Share name:\n   (No shared folders have been added yet. Add one with the \"+\" above.)\n\n")];
         } else {
-            [text appendString:UTF8("  3) Share name (if there are multiple shared folders, enter the one you want to connect to):\n")];
+            [text appendString:UTF8("  4) Share name (if there are multiple shared folders, enter the one you want to connect to):\n")];
             NSEnumerator *e = [shareFolders objectEnumerator];
             NSDictionary *f;
             while ((f = [e nextObject])) {
@@ -3429,9 +3436,9 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             [text appendString:@"\n"];
         }
 
-        [text appendString:UTF8("  4) Username:\n   Enter the username you set on the \"Share Settings\" screen (e.g. yamada).\n\n")];
+        [text appendString:UTF8("  5) Username:\n   Enter the username you set on the \"Share Settings\" screen (e.g. yamada).\n\n")];
         [text appendString:UTF8(
-            "  5) Password:\n"
+            "  6) Password:\n"
             "   Enter the password you set on the Share Settings screen (it won't\n"
             "   be shown on screen). Many people just use their PC login password.\n\n")];
 
