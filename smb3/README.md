@@ -930,14 +930,25 @@ Windowsからの共有接続は当面平文HTTPのまま。
 
 ### PPCPorts側の対応
 
-`aqua/aqualink`のPortfileに`depends_lib-append port:openssl3`と
-`build.args`への`OPENSSL_DIR=${prefix}/libexec/openssl3`を追加
+最初は`aqua/aqualink`のPortfileに`depends_lib-append port:openssl3`と
+`build.args`への`OPENSSL_DIR=${prefix}/libexec/openssl3`を手動で追加した
 (openssl3ポートは`libsmb2`と違い`${prefix}/lib`ではなく専用の
-`${prefix}/libexec/openssl3`配下にインストールされるため、libsmb2の
-`build.args LIBSMB2_DIR=${prefix}`とは書き方が異なる)。合わせて、
-Makefileの`OPENSSL_SSL_A`/`OPENSSL_CRYPTO_A`の探索を、手元ビルドの
+`${prefix}/libexec/openssl3`配下にインストールされるため)。
+
+PR [#303](https://github.com/macos-powerpc/powerpc-ports/pull/303)への
+メンテナのレビューで、この書き方はこのports treeの作法に沿っておらず、
+代わりに`PortGroup openssl 1.0`(`_resources/port1.0/group/openssl-1.0.tcl`)
+を使うべきと指摘を受けた。このPortGroupは`openssl.branch`(既定は`3`。
+明示的に`3`と指定して依存)を読み、既定の`openssl.configure`
+(`env_vars pkgconfig build_flags`)によって`OPENSSL_DIR`/`OPENSSLDIR`環境
+変数をビルド時に自動でエクスポートし、`port:openssl3`の依存関係追加も
+自動でやってくれる。これを受けて、手動の`depends_lib`/`build.args`の
+OpenSSL関連の行を削除し、`PortGroup openssl 1.0` + `openssl.branch 3`
+だけで済む形に直した。
+
+なお、Makefile側の`OPENSSL_SSL_A`/`OPENSSL_CRYPTO_A`の探索も、手元ビルドの
 フラットな配置決め打ちから、`LIBSMB2_A`と同じ「dylib→静的.a→ビルド
-ツリー」の柔軟な探索に修正(これを忘れると、PPCPorts経由のビルドが
+ツリー」の柔軟な探索に修正した(これを忘れると、PPCPorts経由のビルドが
 リンクエラーで失敗していたはずだった)。この修正がv0.5.21のタグ後に
 入ったため、機能面の変更なしにv0.5.22として別途バージョンを上げた
 (v0.5.1→v0.5.2の前例と同じ扱い)。
