@@ -15,8 +15,10 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
+#include <ifaddrs.h>
 
 #define UTF8(cstr) [NSString stringWithUTF8String:(cstr)]
 
@@ -207,6 +209,38 @@ static NSString *AQTLSKeyPath(void)
     return [AQTLSSupportDir() stringByAppendingPathComponent:@"tls-key.pem"];
 }
 
+/* 現在のLAN側IPv4アドレスを取得する(AppDelegate.mのGetLocalIPAddress()と
+   同じロジック。ファイルをまたいだ共有はせず、このファイル内で完結させる
+   既存の方針に合わせて独立に実装している)。証明書のSAN(Subject
+   Alternative Name)に載せるためだけに使う。 */
+static NSString *AQLocalIPAddress(void)
+{
+    struct ifaddrs *interfaces = NULL;
+    NSString *address = nil;
+    if (getifaddrs(&interfaces) == 0) {
+        struct ifaddrs *temp = interfaces;
+        while (temp != NULL) {
+            if (temp->ifa_addr != NULL && temp->ifa_addr->sa_family == AF_INET) {
+                NSString *name = [NSString stringWithUTF8String:temp->ifa_name];
+                if (![name isEqualToString:@"lo0"]) {
+                    char buf[INET_ADDRSTRLEN];
+                    struct sockaddr_in *addrIn = (struct sockaddr_in *)temp->ifa_addr;
+                    if (inet_ntop(AF_INET, &(addrIn->sin_addr), buf, sizeof(buf)) != NULL) {
+                        NSString *ip = [NSString stringWithUTF8String:buf];
+                        if (![ip hasPrefix:@"169.254"]) {
+                            address = ip;
+                            break;
+                        }
+                    }
+                }
+            }
+            temp = temp->ifa_next;
+        }
+        freeifaddrs(interfaces);
+    }
+    return address;
+}
+
 /* 自己署名証明書+RSA鍵を新規生成し、PEMファイルとして保存する。呼ぶのは
    証明書がまだ無い初回だけ(2回目以降は保存済みのものを読み込んで使い回す。
    毎回作り直すと、Finder側で一度信頼した証明書がそのたびに無効になり、
@@ -222,6 +256,13 @@ static BOOL AQGenerateAndSaveCertificate(void)
     EVP_PKEY_assign_RSA(pkey, rsa); /* 以後pkeyがrsaの所有権を持つ */
 
     X509 *x509 = X509_new();
+    /* [実機検証: 2026-09-23] X509_new()の既定バージョンはv1(値0)だが、
+       拡張(SAN等)はX.509v3(値2。バージョン番号は0始まり)でないと構造上
+       許されない。ここを明示しないままSAN拡張だけ追加すると、opensslの
+       -textでは一見表示されてしまうものの、.NETの厳密なX509Certificate2
+       パーサからは"Certificate is corrupted"として拒否される不正な証明書
+       になることを実機で確認した。 */
+    X509_set_version(x509, 2);
     ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
     X509_gmtime_adj(X509_get_notAfter(x509), 60L * 60 * 24 * 3650); /* 10年 */
@@ -230,6 +271,31 @@ static BOOL AQGenerateAndSaveCertificate(void)
     X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
                                 (unsigned char *)"AquaLink", -1, -1, 0);
     X509_set_issuer_name(x509, name);
+
+    /* [実機検証: 2026-09-23] SANが無くCN=AquaLinkだけの証明書だと、Windows
+       (Schannel)がホスト名不一致として拒否し、`net use`が「システムエラー
+       1244(認証されていない)」で失敗することを実機で確認した。macOSの
+       Finderは証明書の信頼可否をOS標準の警告ダイアログでユーザーに直接
+       確認させる作りのため、ホスト名の厳密な一致が無くても通っていたが、
+       Windows側は`Import-Certificate`で信頼ルートに追加した後の検証で
+       CN/SANとの一致を要求するため、この差が表面化した。今のLAN側IPを
+       SANのIPアドレスとして載せることで対応する(接続時に指定する
+       「任意のサーバー名」はホスト間で揃う保証が無いため、SANに含める
+       対象は自己申告不要で必ず一意に定まるIPアドレスのみにしている)。 */
+    NSString *localIP = AQLocalIPAddress();
+    if ([localIP length] > 0) {
+        X509V3_CTX ctx;
+        X509V3_set_ctx_nodb(&ctx);
+        X509V3_set_ctx(&ctx, x509, x509, NULL, NULL, 0);
+        NSString *sanValue = [NSString stringWithFormat:@"IP:%@", localIP];
+        X509_EXTENSION *ext = X509V3_EXT_conf_nid(NULL, &ctx, NID_subject_alt_name,
+                                                    (char *)[sanValue UTF8String]);
+        if (ext != NULL) {
+            X509_add_ext(x509, ext, -1);
+            X509_EXTENSION_free(ext);
+        }
+    }
+
     X509_sign(x509, pkey, EVP_sha256());
 
     FILE *keyFile = fopen([AQTLSKeyPath() UTF8String], "w");
