@@ -3372,10 +3372,14 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [text appendFormat:UTF8("　③ポート番号(このAquaLinkの共有設定画面の「ポート」欄と同じ数字。\n"
                                  "　　何も入力せずEnterを押すと既定値の8091になります):\n　　%d\n\n"), sharePortValue];
 
+        [text appendFormat:UTF8("　④HTTPS(暗号化)を使っているか(y/N。このAquaLinkの共有設定画面の\n"
+                                 "　　「HTTPS(暗号化・実験的)」のチェック状態と同じにしてください):\n　　%@\n\n"),
+                                 (shareUseHTTPS ? @"y" : L("N(何も入力せずEnterでOK)"))];
+
         if ([shareFolders count] == 0) {
-            [text appendString:UTF8("　④共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
+            [text appendString:UTF8("　⑤共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
         } else {
-            [text appendString:UTF8("　④共有名(共有フォルダが複数ある場合、繋ぎたいものを1つ選んで入力してください):\n")];
+            [text appendString:UTF8("　⑤共有名(共有フォルダが複数ある場合、繋ぎたいものを1つ選んで入力してください):\n")];
             NSEnumerator *e = [shareFolders objectEnumerator];
             NSDictionary *f;
             while ((f = [e nextObject])) {
@@ -3385,9 +3389,9 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             [text appendString:@"\n"];
         }
 
-        [text appendString:UTF8("　⑤ユーザー名:\n　　この画面の「共有設定」で決めたユーザー名を入力してください(例: yamada)。\n\n")];
+        [text appendString:UTF8("　⑥ユーザー名:\n　　この画面の「共有設定」で決めたユーザー名を入力してください(例: yamada)。\n\n")];
         [text appendString:UTF8(
-            "　⑥パスワード:\n"
+            "　⑦パスワード:\n"
             "　　共有設定で決めたパスワードを入力してください(画面には表示されません)。\n"
             "　　パソコンのログインパスワードをそのまま使っている方も多いです。\n\n")];
 
@@ -3429,10 +3433,14 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [text appendFormat:UTF8("  3) Port number (same as the \"Port\" field on this AquaLink's Share\n"
                                  "   Settings screen. Just press Enter for the default, 8091):\n   %d\n\n"), sharePortValue];
 
+        [text appendFormat:UTF8("  4) Using HTTPS (encryption)? (y/N -- match this AquaLink's Share\n"
+                                 "   Settings \"HTTPS (encrypted, experimental)\" checkbox):\n   %@\n\n"),
+                                 (shareUseHTTPS ? @"y" : @"N (just press Enter)")];
+
         if ([shareFolders count] == 0) {
-            [text appendString:UTF8("  4) Share name:\n   (No shared folders have been added yet. Add one with the \"+\" above.)\n\n")];
+            [text appendString:UTF8("  5) Share name:\n   (No shared folders have been added yet. Add one with the \"+\" above.)\n\n")];
         } else {
-            [text appendString:UTF8("  4) Share name (if there are multiple shared folders, enter the one you want to connect to):\n")];
+            [text appendString:UTF8("  5) Share name (if there are multiple shared folders, enter the one you want to connect to):\n")];
             NSEnumerator *e = [shareFolders objectEnumerator];
             NSDictionary *f;
             while ((f = [e nextObject])) {
@@ -3442,9 +3450,9 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             [text appendString:@"\n"];
         }
 
-        [text appendString:UTF8("  5) Username:\n   Enter the username you set on the \"Share Settings\" screen (e.g. yamada).\n\n")];
+        [text appendString:UTF8("  6) Username:\n   Enter the username you set on the \"Share Settings\" screen (e.g. yamada).\n\n")];
         [text appendString:UTF8(
-            "  6) Password:\n"
+            "  7) Password:\n"
             "   Enter the password you set on the Share Settings screen (it won't\n"
             "   be shown on screen). Many people just use their PC login password.\n\n")];
 

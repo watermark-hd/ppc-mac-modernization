@@ -1,7 +1,9 @@
 # AquaLink (iBook/PowerMac NAS share) connection setup
-# Registry/hosts changes that need admin rights are auto-elevated;
-# the actual "net use" drive mapping is run WITHOUT admin rights on purpose
-# (a drive mapped from an elevated session is invisible in normal Explorer).
+# Registry/hosts/certificate changes that need admin rights are
+# auto-elevated; the actual "net use" drive mapping is run WITHOUT admin
+# rights on purpose (a drive mapped from an elevated session is invisible
+# in normal Explorer -- do NOT run this .bat file itself "as Administrator",
+# it self-checks for that and will refuse to continue if it detects it).
 #
 # This script prompts for your server's details interactively - nothing to
 # edit in the file itself. The prompts are in English to avoid a known
@@ -34,14 +36,79 @@ $ServerIP = Read-RequiredHost "Server IP address (e.g. 192.168.1.5)"
 $ServerName = Read-RequiredHost "A short local name for this server (e.g. aqualink-nas)"
 $ServerPortInput = Read-Host "Server port shown in AquaLink's Share Settings (press Enter for the default, 8091)"
 $ServerPort = if ([string]::IsNullOrWhiteSpace($ServerPortInput)) { "8091" } else { $ServerPortInput }
+$UseHTTPSInput = Read-Host "Is HTTPS (encryption) turned on in AquaLink's Share Settings? (y/N)"
+$UseHTTPS = $UseHTTPSInput -match '^[Yy]'
 $ShareName = Read-RequiredHost "Share name on the server (e.g. Pictures)"
 $ShareUser = Read-RequiredHost "Username"
 $SecurePassword = Read-Host "Password" -AsSecureString
 $SharePassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(
     [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecurePassword))
 $DriveLetter = "Z:"
+$AuthScheme = if ($UseHTTPS) { "https" } else { "http" }
 
 Write-Host ""
+
+# 0. If HTTPS is on, fetch AquaLink's self-signed certificate and trust it.
+#
+# [2026-09-23] AquaLink generates its own self-signed certificate (there's
+# no real CA behind it, since this is a LAN-only, self-hosted server). A TLS
+# handshake always presents the server's certificate before any encryption
+# or trust decision happens, so it can be captured directly over a raw
+# SslStream connection with certificate validation disabled for JUST that
+# one read -- no server-side support needed, and no plain-HTTP fallback
+# required even though the server speaks HTTPS-only once this mode is on.
+# Verified locally (macOS pwsh) against the real server before writing this:
+# the extracted certificate's SHA1 fingerprint matched the server's own
+# tls-cert.pem exactly. Once fetched, it's imported into the Local Machine
+# Trusted Root store so `net use`/WebClient will accept it without a
+# certificate-warning prompt (which net use has no way to click through).
+function Import-AquaLinkCertificateIfNeeded {
+    param($ServerIP, $ServerPort)
+
+    $tcpClient = $null
+    $sslStream = $null
+    try {
+        $tcpClient = New-Object System.Net.Sockets.TcpClient($ServerIP, [int]$ServerPort)
+        $callback = { param($sender, $cert, $chain, $errors) return $true }
+        $sslStream = New-Object System.Net.Security.SslStream($tcpClient.GetStream(), $false, $callback)
+        $sslStream.AuthenticateAsClient($ServerIP)
+        $remoteCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]$sslStream.RemoteCertificate
+    } catch {
+        Write-Host "Could not fetch the server's certificate: $_" -ForegroundColor Red
+        return $false
+    } finally {
+        if ($sslStream) { $sslStream.Close() }
+        if ($tcpClient) { $tcpClient.Close() }
+    }
+
+    $alreadyTrusted = Get-ChildItem -Path Cert:\LocalMachine\Root |
+        Where-Object { $_.Thumbprint -eq $remoteCert.Thumbprint }
+    if ($alreadyTrusted) {
+        Write-Host "Certificate: already trusted" -ForegroundColor Green
+        return $true
+    }
+
+    Write-Host "First-time setup: trusting AquaLink's certificate (an admin approval popup will appear)..." -ForegroundColor Yellow
+    $certBytes = $remoteCert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+    $certPath = Join-Path $env:TEMP "aqualink-cert.cer"
+    [System.IO.File]::WriteAllBytes($certPath, $certBytes)
+    $tempScript = Join-Path $env:TEMP "aqualink-cert-import.ps1"
+    @"
+Import-Certificate -FilePath '$certPath' -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+"@ | Set-Content -Path $tempScript -Encoding UTF8
+    Start-Process powershell -Verb RunAs -Wait -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`""
+    Remove-Item -Path $tempScript -ErrorAction SilentlyContinue
+    Remove-Item -Path $certPath -ErrorAction SilentlyContinue
+    return $true
+}
+
+if ($UseHTTPS) {
+    if (-not (Import-AquaLinkCertificateIfNeeded -ServerIP $ServerIP -ServerPort $ServerPort)) {
+        Write-Host "Stopping here since the certificate could not be verified." -ForegroundColor Red
+        pause
+        exit 1
+    }
+}
 
 # 1. WebClient Basic auth settings (allow Basic auth over plain HTTP)
 #
@@ -58,7 +125,7 @@ Write-Host ""
 # clobber earlier entries.
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
 $authForwardList = (Get-ItemProperty -Path $regPath -Name "AuthForwardServerList" -ErrorAction SilentlyContinue).AuthForwardServerList
-$authEntry = "http://$ServerName"
+$authEntry = "${AuthScheme}://$ServerName"
 $hasAuthEntry = ($null -ne $authForwardList) -and ($authForwardList -contains $authEntry)
 $needReg = -not ((Test-RegistryValue $regPath "BasicAuthLevel" 2) -and (Test-RegistryValue $regPath "UseBasicAuth" 1) -and $hasAuthEntry)
 
@@ -139,8 +206,10 @@ $ErrorActionPreference = $prevEAP
 # convention) -- otherwise this fails with "network path not found"
 # (system error 67), which was hit in real-world testing (2026-09-22)
 # right after the AuthForwardServerList fix above got past the previous
-# (auth-related) failure.
-$netUseResult = net use $DriveLetter "\\$ServerName@$ServerPort\DavWWWRoot\$ShareName" $SharePassword "/USER:$ShareUser" /PERSISTENT:YES
+# (auth-related) failure. For HTTPS, the convention is "@SSL@port" instead
+# of just "@port".
+$sslSegment = if ($UseHTTPS) { "@SSL" } else { "" }
+$netUseResult = net use $DriveLetter "\\$ServerName$sslSegment@$ServerPort\DavWWWRoot\$ShareName" $SharePassword "/USER:$ShareUser" /PERSISTENT:YES
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Connected! $DriveLetter should now appear under This PC in File Explorer." -ForegroundColor Green
