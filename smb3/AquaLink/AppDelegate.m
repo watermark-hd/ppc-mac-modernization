@@ -3353,7 +3353,10 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             "【1】このプロジェクトの配布ページから接続用ファイルをダウンロードし、\n"
             "展開(解凍)してください。\n\n"
             "【2】展開してできたフォルダの中の connect-aqualink.bat を\n"
-            "ダブルクリックして起動してください。\n\n"
+            "普通にダブルクリックして起動してください。\n"
+            "(「管理者として実行」は選ばないでください。管理者権限で実行すると、\n"
+            "接続自体は成功したように見えても、できたドライブが普通のエクス\n"
+            "プローラーからは見えなくなってしまいます)\n\n"
             "【3】以下の項目を、聞かれた順番にそのまま入力してください:\n\n")];
 
         [text appendFormat:UTF8("　①サーバーのIPアドレス:\n　　%@\n"), (ip ? ip : UTF8("(取得できません。共有を開始してから再度お試しください)"))];
@@ -3406,7 +3409,10 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
             "[1] Download the connection files from this project's release page\n"
             "and extract (unzip) them.\n\n"
             "[2] Double-click connect-aqualink.bat inside the extracted folder\n"
-            "to run it.\n\n"
+            "normally to run it.\n"
+            "(Do NOT choose \"Run as administrator\" -- if you do, the\n"
+            "connection can report success but the resulting drive won't show\n"
+            "up in a normal File Explorer window.)\n\n"
             "[3] Enter the following items exactly as asked, in order:\n\n")];
 
         [text appendFormat:UTF8("  1) Server IP address:\n   %@\n"), (ip ? ip : UTF8("(Could not detect it. Start sharing first, then try again.)"))];
