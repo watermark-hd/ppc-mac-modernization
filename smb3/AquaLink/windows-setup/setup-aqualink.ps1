@@ -33,11 +33,19 @@ Write-Host "Enter the details of the AquaLink share you want to connect to."
 Write-Host ""
 
 $ServerIP = Read-RequiredHost "Server IP address (e.g. 192.168.1.5)"
-$ServerName = Read-RequiredHost "A short local name for this server (e.g. aqualink-nas)"
 $ServerPortInput = Read-Host "Server port shown in AquaLink's Share Settings (press Enter for the default, 8091)"
 $ServerPort = if ([string]::IsNullOrWhiteSpace($ServerPortInput)) { "8091" } else { $ServerPortInput }
 $UseHTTPSInput = Read-Host "Is HTTPS (encryption) turned on in AquaLink's Share Settings? (y/N)"
 $UseHTTPS = $UseHTTPSInput -match '^[Yy]'
+# [2026-10-04] With HTTPS on, this name is baked into AquaLink's TLS
+# certificate (its Bonjour local hostname, e.g. "iBook.local") and MUST be
+# typed exactly as shown on AquaLink's Windows Connection Guide screen --
+# it can no longer be freely chosen, unlike the plain-HTTP case below.
+$ServerName = if ($UseHTTPS) {
+    Read-RequiredHost "Server name EXACTLY as shown on AquaLink's Windows Connection Guide (e.g. iBook.local)"
+} else {
+    Read-RequiredHost "A short local name for this server (e.g. aqualink-nas)"
+}
 $ShareName = Read-RequiredHost "Share name on the server (e.g. Pictures)"
 $ShareUser = Read-RequiredHost "Username"
 $SecurePassword = Read-Host "Password" -AsSecureString
@@ -125,10 +133,10 @@ if ($UseHTTPS) {
 # clobber earlier entries.
 $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\WebClient\Parameters"
 $authForwardList = (Get-ItemProperty -Path $regPath -Name "AuthForwardServerList" -ErrorAction SilentlyContinue).AuthForwardServerList
-# For HTTPS, the actual connection addresses the server by IP (see the net
-# use step below for why), so this entry needs to match that same identity.
-$authHost = if ($UseHTTPS) { $ServerIP } else { $ServerName }
-$authEntry = "${AuthScheme}://$authHost"
+# [2026-10-04] This used to address HTTPS connections by IP instead of
+# $ServerName (see the net use step below for the old reasoning, now
+# obsolete). This entry always matches the friendly name now.
+$authEntry = "${AuthScheme}://$ServerName"
 $hasAuthEntry = ($null -ne $authForwardList) -and ($authForwardList -contains $authEntry)
 $needReg = -not ((Test-RegistryValue $regPath "BasicAuthLevel" 2) -and (Test-RegistryValue $regPath "UseBasicAuth" 1) -and $hasAuthEntry)
 
@@ -212,21 +220,17 @@ $ErrorActionPreference = $prevEAP
 # (auth-related) failure. For HTTPS, the convention is "@SSL@port" instead
 # of just "@port".
 #
-# [2026-09-23] For HTTPS specifically, the UNC path's server identity uses
-# $ServerIP rather than the friendly $ServerName. AquaLink's self-signed
-# certificate has to list something concrete in its Subject Alternative
-# Name for Schannel to accept it (a cert with no SAN, or one that doesn't
-# match the name being connected to, gets rejected -- surfaced as system
-# error 1244 in real-world testing even with the certificate already
-# trusted, added and verified after the AuthForwardServerList/hosts fixes
-# above stopped being the failure). AquaLink puts its current LAN IP in
-# that SAN (it has no way to know in advance what arbitrary friendly name
-# someone will type here), so the connection has to address it by IP to
-# match. Plain HTTP doesn't go through certificate validation at all, so
-# it keeps using the friendly name as before.
+# [2026-09-23, superseded 2026-10-04] HTTPS used to address the server by
+# $ServerIP here instead of $ServerName, because AquaLink's self-signed
+# certificate put the server's current LAN IP in its Subject Alternative
+# Name. That broke the moment the IP changed (a router reboot reassigning
+# DHCP leases reproduced the exact same "system error 1244" this section
+# was originally written to fix). AquaLink now puts its stable Bonjour
+# local hostname in the SAN instead, so both HTTP and HTTPS address the
+# server the same way, by $ServerName -- the hosts file entry above is
+# what keeps that name pointing at the right IP.
 $sslSegment = if ($UseHTTPS) { "@SSL" } else { "" }
-$connectHost = if ($UseHTTPS) { $ServerIP } else { $ServerName }
-$netUseResult = net use $DriveLetter "\\$connectHost$sslSegment@$ServerPort\DavWWWRoot\$ShareName" $SharePassword "/USER:$ShareUser" /PERSISTENT:YES
+$netUseResult = net use $DriveLetter "\\$ServerName$sslSegment@$ServerPort\DavWWWRoot\$ShareName" $SharePassword "/USER:$ShareUser" /PERSISTENT:YES
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "Connected! $DriveLetter should now appear under This PC in File Explorer." -ForegroundColor Green

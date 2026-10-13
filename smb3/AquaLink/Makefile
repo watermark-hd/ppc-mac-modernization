@@ -56,7 +56,7 @@ ifneq ($(SDKROOT),)
 CFLAGS += -isysroot $(SDKROOT)
 LDFLAGS += -isysroot $(SDKROOT)
 endif
-LDFLAGS += -framework Cocoa -framework Security
+LDFLAGS += -framework Cocoa -framework Security -framework SystemConfiguration
 
 OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o
 

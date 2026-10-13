@@ -14,6 +14,7 @@
 #include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <Security/Security.h>
+#include <SystemConfiguration/SystemConfiguration.h>
 
 /* NSString版sprintfの単純な置換ヘルパー(定義は本ファイル下部)。前方宣言。 */
 static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *replacement);
@@ -399,6 +400,24 @@ static NSString *GetLocalIPAddress(void)
         freeifaddrs(interfaces);
     }
     return address ? address : UTF8("(IP不明)");
+}
+
+/* MacのBonjourローカルホスト名(例: "iBook.local")。[実機検証: 2026-10-04]
+   HTTPS時の証明書のSANにはIPではなくこの名前を使うようにした(IPはDHCPの
+   再割当てで変わり、証明書が無効になる実機不具合があったため)。Windows用
+   ガイドでHTTPS時に案内する「サーバーの名前」は、この名前と完全に一致
+   させる必要がある(証明書のDNS名と一致しないとWindows側の検証で
+   弾かれる)。LocalWebDAVServer.mにも同じロジックが独立にあるが、ファイルを
+   またいだ共有はしない既存の方針に合わせている。 */
+static NSString *GetBonjourHostname(void)
+{
+    CFStringRef name = SCDynamicStoreCopyLocalHostName(NULL);
+    if (name == NULL) {
+        return UTF8("(取得できません)");
+    }
+    NSString *hostname = [(NSString *)name stringByAppendingString:@".local"];
+    CFRelease(name);
+    return hostname;
 }
 
 /* --- キーチェーン: パスワードを平文でNSUserDefaultsに置かないための保存先 ---
@@ -3363,18 +3382,25 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
         [text appendString:UTF8("　　(この数字はMacのネットワーク環境によって変わります。表示が違う場合は\n"
                                  "　　Macの「システム環境設定 > ネットワーク」で現在のIPアドレスをご確認ください)\n\n")];
 
-        [text appendString:UTF8(
-            "　②このサーバーの名前(自由に決めて構いませんが、\n"
-            "　　ご自身の名前やWindows PCの名前と同じにしないでください。\n"
-            "　　名前が衝突していると繋がらないことがあります):\n"
-            "　　例) aqualink-mac\n\n")];
-
-        [text appendFormat:UTF8("　③ポート番号(このAquaLinkの共有設定画面の「ポート」欄と同じ数字。\n"
+        [text appendFormat:UTF8("　②ポート番号(このAquaLinkの共有設定画面の「ポート」欄と同じ数字。\n"
                                  "　　何も入力せずEnterを押すと既定値の8091になります):\n　　%d\n\n"), sharePortValue];
 
-        [text appendFormat:UTF8("　④HTTPS(暗号化)を使っているか(y/N。このAquaLinkの共有設定画面の\n"
+        [text appendFormat:UTF8("　③HTTPS(暗号化)を使っているか(y/N。このAquaLinkの共有設定画面の\n"
                                  "　　「HTTPS(暗号化・実験的)」のチェック状態と同じにしてください):\n　　%@\n\n"),
                                  (shareUseHTTPS ? @"y" : L("N(何も入力せずEnterでOK)"))];
+
+        if (shareUseHTTPS) {
+            [text appendFormat:UTF8(
+                "　④このサーバーの名前(HTTPS使用時は暗号化の証明書と結び付いて\n"
+                "　　いるため、自由には決められません。下記をそのまま入力してください):\n"
+                "　　%@\n\n"), GetBonjourHostname()];
+        } else {
+            [text appendString:UTF8(
+                "　④このサーバーの名前(自由に決めて構いませんが、\n"
+                "　　ご自身の名前やWindows PCの名前と同じにしないでください。\n"
+                "　　名前が衝突していると繋がらないことがあります):\n"
+                "　　例) aqualink-mac\n\n")];
+        }
 
         if ([shareFolders count] == 0) {
             [text appendString:UTF8("　⑤共有名:\n　　(まだ共有フォルダが追加されていません。上の「+」で追加してください)\n\n")];
@@ -3424,18 +3450,26 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
                                  "   different, check the current IP address under \"System Preferences >\n"
                                  "   Network\" on the Mac.)\n\n")];
 
-        [text appendString:UTF8(
-            "  2) A name for this server (you can choose anything, but don't\n"
-            "   make it the same as your own name or your Windows PC's name --\n"
-            "   a name collision can prevent connecting):\n"
-            "   e.g. aqualink-mac\n\n")];
-
-        [text appendFormat:UTF8("  3) Port number (same as the \"Port\" field on this AquaLink's Share\n"
+        [text appendFormat:UTF8("  2) Port number (same as the \"Port\" field on this AquaLink's Share\n"
                                  "   Settings screen. Just press Enter for the default, 8091):\n   %d\n\n"), sharePortValue];
 
-        [text appendFormat:UTF8("  4) Using HTTPS (encryption)? (y/N -- match this AquaLink's Share\n"
+        [text appendFormat:UTF8("  3) Using HTTPS (encryption)? (y/N -- match this AquaLink's Share\n"
                                  "   Settings \"HTTPS (encrypted, experimental)\" checkbox):\n   %@\n\n"),
                                  (shareUseHTTPS ? @"y" : @"N (just press Enter)")];
+
+        if (shareUseHTTPS) {
+            [text appendFormat:UTF8(
+                "  4) A name for this server (with HTTPS on, this is tied to the\n"
+                "   encryption certificate, so it can't be chosen freely -- enter\n"
+                "   this exactly):\n"
+                "   %@\n\n"), GetBonjourHostname()];
+        } else {
+            [text appendString:UTF8(
+                "  4) A name for this server (you can choose anything, but don't\n"
+                "   make it the same as your own name or your Windows PC's name --\n"
+                "   a name collision can prevent connecting):\n"
+                "   e.g. aqualink-mac\n\n")];
+        }
 
         if ([shareFolders count] == 0) {
             [text appendString:UTF8("  5) Share name:\n   (No shared folders have been added yet. Add one with the \"+\" above.)\n\n")];
@@ -3525,11 +3559,15 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
     NSString *message;
     if (started) {
         localWebDAVServer = server;
-        NSString *ip = GetLocalIPAddress();
+        /* [実機検証: 2026-10-04] HTTPS時、証明書のSANはIPではなくBonjourの
+           ローカルホスト名になっている(DHCPでIPが変わっても証明書を無効に
+           しないため)。接続先として案内するアドレスもIPではなく同じ名前に
+           揃えないと、証明書の検証(Finder含む)で不一致になる。 */
+        NSString *host = useTLS ? GetBonjourHostname() : GetLocalIPAddress();
         NSString *scheme = useTLS ? @"https" : @"http";
         message = [NSString stringWithFormat:
                    L("共有中です(%d フォルダ)。他の機器から下記へ接続してください:\n%@://%@:%d/ (ユーザー名/パスワードが必要)"),
-                   (int)[sharesDict count], scheme, ip, p];
+                   (int)[sharesDict count], scheme, host, p];
     } else {
         [server release];
         message = L("共有の開始に失敗しました(ポートを確保できません)");

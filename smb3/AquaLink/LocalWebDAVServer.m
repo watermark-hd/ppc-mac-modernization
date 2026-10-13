@@ -19,6 +19,7 @@
 #include <openssl/pem.h>
 #include <openssl/rsa.h>
 #include <ifaddrs.h>
+#include <SystemConfiguration/SystemConfiguration.h>
 
 #define UTF8(cstr) [NSString stringWithUTF8String:(cstr)]
 
@@ -209,36 +210,23 @@ static NSString *AQTLSKeyPath(void)
     return [AQTLSSupportDir() stringByAppendingPathComponent:@"tls-key.pem"];
 }
 
-/* 現在のLAN側IPv4アドレスを取得する(AppDelegate.mのGetLocalIPAddress()と
-   同じロジック。ファイルをまたいだ共有はせず、このファイル内で完結させる
-   既存の方針に合わせて独立に実装している)。証明書のSAN(Subject
-   Alternative Name)に載せるためだけに使う。 */
-static NSString *AQLocalIPAddress(void)
+/* MacのBonjourローカルホスト名(「設定」>「共有」の「ローカルホスト名」。
+   例: "iBook"）を取得し、証明書のSAN(Subject Alternative Name)に載せる
+   DNS名として使う。[実機検証: 2026-10-04] 以前はここでIPアドレスを使って
+   いたが、ルーター再起動によるDHCPの再割当て(有線/Wi-Fiの切り替えでも
+   同様に起こる)でIPが変わるたびに証明書のSANが古いIPを指したままになり、
+   Windows側の検証でホスト名不一致となって「システムエラー1244」が再発する
+   実機不具合が見つかった。Bonjourのローカルホスト名はIPが変わっても
+   Macが自分で再アナウンスするため、ネットワーク変化に強い。 */
+static NSString *AQLocalBonjourHostname(void)
 {
-    struct ifaddrs *interfaces = NULL;
-    NSString *address = nil;
-    if (getifaddrs(&interfaces) == 0) {
-        struct ifaddrs *temp = interfaces;
-        while (temp != NULL) {
-            if (temp->ifa_addr != NULL && temp->ifa_addr->sa_family == AF_INET) {
-                NSString *name = [NSString stringWithUTF8String:temp->ifa_name];
-                if (![name isEqualToString:@"lo0"]) {
-                    char buf[INET_ADDRSTRLEN];
-                    struct sockaddr_in *addrIn = (struct sockaddr_in *)temp->ifa_addr;
-                    if (inet_ntop(AF_INET, &(addrIn->sin_addr), buf, sizeof(buf)) != NULL) {
-                        NSString *ip = [NSString stringWithUTF8String:buf];
-                        if (![ip hasPrefix:@"169.254"]) {
-                            address = ip;
-                            break;
-                        }
-                    }
-                }
-            }
-            temp = temp->ifa_next;
-        }
-        freeifaddrs(interfaces);
+    CFStringRef name = SCDynamicStoreCopyLocalHostName(NULL);
+    if (name == NULL) {
+        return nil;
     }
-    return address;
+    NSString *hostname = [(NSString *)name stringByAppendingString:@".local"];
+    CFRelease(name);
+    return hostname;
 }
 
 /* 自己署名証明書+RSA鍵を新規生成し、PEMファイルとして保存する。呼ぶのは
@@ -278,16 +266,17 @@ static BOOL AQGenerateAndSaveCertificate(void)
        Finderは証明書の信頼可否をOS標準の警告ダイアログでユーザーに直接
        確認させる作りのため、ホスト名の厳密な一致が無くても通っていたが、
        Windows側は`Import-Certificate`で信頼ルートに追加した後の検証で
-       CN/SANとの一致を要求するため、この差が表面化した。今のLAN側IPを
-       SANのIPアドレスとして載せることで対応する(接続時に指定する
-       「任意のサーバー名」はホスト間で揃う保証が無いため、SANに含める
-       対象は自己申告不要で必ず一意に定まるIPアドレスのみにしている)。 */
-    NSString *localIP = AQLocalIPAddress();
-    if ([localIP length] > 0) {
+       CN/SANとの一致を要求するため、この差が表面化した。
+       [実機検証: 2026-10-04] 当初はここにIPアドレスを載せていたが、DHCPで
+       IPが変わるたびに証明書が無効になる実機不具合が見つかったため、
+       Bonjourのローカルホスト名(DNS名、IPが変わっても不変)に変更した。
+       接続側(Windows)はこの名前をhostsファイルで現在のIPに紐付ける。 */
+    NSString *bonjourName = AQLocalBonjourHostname();
+    if ([bonjourName length] > 0) {
         X509V3_CTX ctx;
         X509V3_set_ctx_nodb(&ctx);
         X509V3_set_ctx(&ctx, x509, x509, NULL, NULL, 0);
-        NSString *sanValue = [NSString stringWithFormat:@"IP:%@", localIP];
+        NSString *sanValue = [NSString stringWithFormat:@"DNS:%@", bonjourName];
         X509_EXTENSION *ext = X509V3_EXT_conf_nid(NULL, &ctx, NID_subject_alt_name,
                                                     (char *)[sanValue UTF8String]);
         if (ext != NULL) {
