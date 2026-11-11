@@ -73,6 +73,12 @@ static NSString *URLEncodePathComponent(NSString *s)
     return port;
 }
 
+/* 応答先を失ったマウントを外す間だけ使うモード。SMBには触らず、ルートの存在だけ答える */
+- (void)setDrainOnly:(BOOL)flag
+{
+    drainOnly = flag;
+}
+
 - (BOOL)startOnPort:(int)p
 {
     listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -150,7 +156,15 @@ static NSString *URLEncodePathComponent(NSString *s)
     if ([self readRequestFromSocket:fd method:&method path:&path headers:&headers body:&body]) {
         NSString *depth = [headers objectForKey:@"depth"];
 
-        if ([method isEqualToString:@"OPTIONS"]) {
+        if (drainOnly) {
+            if ([method isEqualToString:@"OPTIONS"]) {
+                [self handleOPTIONS:fd];
+            } else if ([method isEqualToString:@"PROPFIND"]) {
+                [self handleDrainPROPFIND:path toSocket:fd];
+            } else {
+                [self sendSimpleStatus:@"503 Service Unavailable" toSocket:fd];
+            }
+        } else if ([method isEqualToString:@"OPTIONS"]) {
             [self handleOPTIONS:fd];
         } else if ([method isEqualToString:@"PROPFIND"]) {
             [self handlePROPFIND:path depth:(depth ? depth : @"1") toSocket:fd];
@@ -420,6 +434,25 @@ static NSString *URLEncodePathComponent(NSString *s)
 
         [xml appendString:[self responseEntryForHref:childHref isDir:childIsDir size:size mtime:mtime]];
     }
+    [xml appendString:@"</D:multistatus>\n"];
+
+    NSData *bodyData = [xml dataUsingEncoding:NSUTF8StringEncoding];
+    NSMutableString *head = [NSMutableString string];
+    [head appendString:@"HTTP/1.1 207 Multi-Status\r\n"];
+    [head appendString:@"Content-Type: text/xml; charset=\"utf-8\"\r\n"];
+    [head appendFormat:@"Content-Length: %lu\r\n", (unsigned long)[bodyData length]];
+    [head appendString:@"Connection: close\r\n\r\n"];
+
+    [self sendBytes:[head dataUsingEncoding:NSUTF8StringEncoding] toSocket:fd];
+    [self sendBytes:bodyData toSocket:fd];
+}
+
+- (void)handleDrainPROPFIND:(NSString *)path toSocket:(int)fd
+{
+    NSMutableString *xml = [NSMutableString string];
+    [xml appendString:@"<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"];
+    [xml appendString:@"<D:multistatus xmlns:D=\"DAV:\">\n"];
+    [xml appendString:[self responseEntryForHref:path isDir:YES size:0 mtime:time(NULL)]];
     [xml appendString:@"</D:multistatus>\n"];
 
     NSData *bodyData = [xml dataUsingEncoding:NSUTF8StringEncoding];

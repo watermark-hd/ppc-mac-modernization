@@ -13,6 +13,7 @@
 #include <sys/param.h>
 #include <sys/mount.h>
 #include <sys/sysctl.h>
+#include <sys/socket.h>
 #include <Security/Security.h>
 #include <SystemConfiguration/SystemConfiguration.h>
 
@@ -91,6 +92,16 @@ static NSDictionary *EnglishTranslations(void)
             @"Failed to disconnect: %@", UTF8("取り外しに失敗しました: %@"),
             @"Password entry was cancelled", UTF8("パスワード入力がキャンセルされました"),
             @"Privileged umount failed", UTF8("管理者権限でのumountに失敗しました"),
+            @"A mount operation is in progress", UTF8("マウント処理の途中です"),
+            @"Please quit again after it finishes.", UTF8("処理が終わってから、もう一度終了してください。"),
+            @"Unmounting before quitting...", UTF8("終了前にマウントを取り外しています..."),
+            @"AquaLink did not quit", UTF8("AquaLinkを終了しませんでした"),
+            @"The Finder volume could not be removed, so quitting was cancelled. The volume still works. Try quitting again.", UTF8("Finderのマウントを取り外せなかったため、終了を中止しました。マウントは引き続き使えます。もう一度終了をお試しください。"),
+            @"Removed a mount left over from a previous session", UTF8("前回のマウントを片付けました"),
+            @"Mounting was cancelled", UTF8("マウントを中止しました"),
+            @"One-time setup required", UTF8("初回の準備が必要です"),
+            @"So that mounted folders can always be removed (with \"Disconnect\" or when AquaLink quits), AquaLink will set up a small helper program with administrator rights. This is needed only once.", UTF8("マウントしたフォルダを、「取り外す」やAquaLinkの終了時に確実に取り外せるようにするため、初回だけ管理者権限で小さな専用プログラムを準備します。次回以降はこの確認は出ません。"),
+            @"Could not remove a mount left over from a previous session. AquaLink will try again next time.", UTF8("前回のマウントを取り外せませんでした。次回もう一度試します"),
             @"Share This Mac (as NAS)", UTF8("このMacを共有(NAS化)"),
             @"LAN use only. Passwords are sent unencrypted (plain HTTP). Do not expose this to the internet (e.g. via router port forwarding).", UTF8("LAN内限定で使用してください。パスワードは暗号化されません(平文HTTP)。ルーターのポート開放等でインターネットに直接公開しないこと。"),
             @"LAN use only. Encrypted via HTTPS, but the certificate is self-signed (you'll see a warning when connecting). Do not expose this to the internet (e.g. via router port forwarding).", UTF8("LAN内限定で使用してください。HTTPSで暗号化されますが、証明書は自己署名(接続時に警告が出ます)。ルーターのポート開放等でインターネットに直接公開しないこと。"),
@@ -735,6 +746,8 @@ static NSString *AQURLEncode(NSString *s)
                                             backing:NSBackingStoreBuffered
                                               defer:NO];
     [window setTitle:@"AquaLink"];
+    /* 終了を中止した時に閉じたウィンドウを再表示するため、閉じても解放しない */
+    [window setReleasedWhenClosed:NO];
 
     NSView *content = [window contentView];
     float h = frame.size.height;
@@ -1000,6 +1013,16 @@ static NSString *AQURLEncode(NSString *s)
                                               selector:@selector(resyncMountedStateFromGroundTruth)
                                                   name:NSApplicationDidBecomeActiveNotification
                                                 object:nil];
+
+    /* ログアウト・再起動・システム終了の通知。終了時の確認ダイアログを止めるために使う */
+    [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                                                            selector:@selector(systemWillPowerOff:)
+                                                                name:NSWorkspaceWillPowerOffNotification
+                                                              object:nil];
+
+    [NSThread detachNewThreadSelector:@selector(cleanupLeftoverMountsInBackground)
+                             toTarget:self
+                           withObject:nil];
 }
 
 /* 前回終了時のクラッシュ記録を確認し、新しいもの(前回確認した件数より
@@ -2091,15 +2114,23 @@ static void AQKillallFinder(void)
    受けた懸念)。開いているウィンドウが無ければ黙って直す。ウィンドウが
    ある(または判定できない)時は、無断で閉じずに本人に確認する
    (AppDelegateの-refreshFinderVolumeIconsAskingIfNeededへ)。 */
+static BOOL gAQTerminating = NO; /* 終了処理中はキューに積むと実行されないので同期で確認する */
+/* ログアウト・再起動・システム終了による終了中。この間は確認ダイアログを一切出さず、
+   Finderも再起動しない(応答待ちでシャットダウンを止めないため) */
+static BOOL gAQSystemQuit = NO;
+
 static void AQRefreshFinderVolumeIcons(void)
 {
+    if (gAQSystemQuit) {
+        return;
+    }
     if (AQFinderOpenWindowCount() == 0) {
         AQKillallFinder();
         return;
     }
     [(id)[NSApp delegate] performSelectorOnMainThread:@selector(refreshFinderVolumeIconsAskingIfNeeded)
                                             withObject:nil
-                                         waitUntilDone:NO];
+                                         waitUntilDone:gAQTerminating];
 }
 
 /* mountPointに残った空ディレクトリを片付ける(中身があれば触らない=
@@ -2112,6 +2143,10 @@ static void AQCleanupEmptyMountDir(NSString *mountPoint)
     NSArray *contents = [[NSFileManager defaultManager] directoryContentsAtPath:mountPoint];
     if (contents != nil && [contents count] == 0) {
         rmdir([mountPoint fileSystemRepresentation]);
+    }
+    /* アンマウントと同時にフォルダが消えた場合(contents == nil)もFinderの表示は
+       古いまま残るので、同じように更新する。中身のある実フォルダなら何もしない */
+    if (contents == nil || [contents count] == 0) {
         AQRefreshFinderVolumeIcons();
     }
 }
@@ -2298,6 +2333,15 @@ static BOOL AQMountWebdavHasSetuid(void)
         }
     }
 
+    /* 取り外し用ヘルパーの準備(管理者パスワード)は、終了しようとした時ではなく
+       最初のマウント時に済ませる。準備できなければマウントしない
+       (外せないマウントを作らないため) */
+    if (![self ensureUmountHelperSetuidWithPrompt]) {
+        [statusLabel setStringValue:L("マウントを中止しました")];
+        return;
+    }
+
+    mountOperationInProgress = YES;
     [mountButton setEnabled:NO];
     [statusLabel setStringValue:L("Finderに接続中...")];
     [NSThread detachNewThreadSelector:@selector(doMount) toTarget:self withObject:nil];
@@ -2306,6 +2350,8 @@ static BOOL AQMountWebdavHasSetuid(void)
 - (void)doMount
 {
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+    [self cleanupLeftoverMounts];
 
     webdavServer = [[WebDAVServer alloc] initWithAppDelegate:self];
     int p = 8090;
@@ -2431,6 +2477,7 @@ static BOOL AQMountWebdavHasSetuid(void)
    全文を出す。ボタンはクリックできる「OK」。 */
 - (void)mountFailed:(NSString *)message
 {
+    mountOperationInProgress = NO;
     [statusLabel setStringValue:message];
     [mountButton setEnabled:YES];
     [mountButton setTitle:L("Finderに接続")];
@@ -2450,6 +2497,7 @@ static BOOL AQMountWebdavHasSetuid(void)
    のを防ぐため、マウント成功専用にした)。 */
 - (void)mountSucceededWithMessage:(NSString *)message
 {
+    mountOperationInProgress = NO;
     [statusLabel setStringValue:message];
     [mountButton setEnabled:YES];
     [mountButton setTitle:L("取り外す")];
@@ -2461,6 +2509,7 @@ static BOOL AQMountWebdavHasSetuid(void)
 /* 取り外し(成否問わず)の結果表示。ここではFinderを開かない。 */
 - (void)mountFinishedWithMessage:(NSString *)message
 {
+    mountOperationInProgress = NO;
     [statusLabel setStringValue:message];
     [mountButton setEnabled:YES];
     [mountButton setTitle:(mounted ? L("取り外す") : L("Finderに接続"))];
@@ -2468,62 +2517,49 @@ static BOOL AQMountWebdavHasSetuid(void)
 
 - (void)unmountAction:(id)sender
 {
+    mountOperationInProgress = YES;
     [mountButton setEnabled:NO];
     [statusLabel setStringValue:L("取り外し中...")];
     [NSThread detachNewThreadSelector:@selector(doUnmount) toTarget:self withObject:nil];
 }
 
-- (void)doUnmount
+/* umount → umount -f が権限で拒否されたら、同梱のsetuidヘルパーで外す。
+   初回のみ管理者パスワードの確認が出る(メインスレッドで同期実行)。
+   戻り値: 実際に外れたらYES。 */
+- (BOOL)unmountWithHelperIfNeeded:(NSString *)mp
 {
-    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    if (AQTeardownMountPoint(mp)) {
+        return YES;
+    }
+    if (gAQSystemQuit && !AQUmountHelperHasSetuid()) {
+        return NO; /* シャットダウン中は準備の確認を出さない */
+    }
+    NSMutableArray *helperReadyHolder = [NSMutableArray array];
+    [self performSelectorOnMainThread:@selector(ensureUmountHelperSetuidWithPromptInto:)
+                            withObject:helperReadyHolder
+                         waitUntilDone:YES];
+    BOOL helperReady = ([helperReadyHolder count] > 0) && [[helperReadyHolder objectAtIndex:0] boolValue];
+    return helperReady && AQRunPrivilegedHelperUmount(mp, 10.0);
+}
 
+/* 今のマウントを外し、外れたことを確認できた場合だけサーバーを止める
+   (先に止めると応答先のないマウントが残り、/Volumes全体が固まる恐れがある)。
+   バックグラウンド・メインどちらのスレッドからでも呼べる。 */
+- (BOOL)removeActiveMountWithError:(NSString **)outPrivilegedError
+{
     NSString *mp = [[mountPointPath retain] autorelease];
-    NSString *privilegedError = nil;
+    BOOL unmountOK = [self unmountWithHelperIfNeeded:mp];
 
-    /* まず標準の後始末(mount_webdavをkill → umount → umount -f、いずれもタイムアウト付き。
-       最後に「本当に外れたか」をstatfsで確認)。ここを terminationStatus ではなく
-       実際の状態で判定するのが肝。半端に外れたと誤認してサーバーを止めると、
-       応答の来ないマウントが残って /Volumes 全体(Finder/Dock含む)が固まる。 */
-    BOOL unmountOK = AQTeardownMountPoint(mp);
-
-    if (!unmountOK && mp != nil) {
-        /* 一部の環境では、マウントがroot所有として扱われ、一般ユーザー権限の
-           umountが "Operation not permitted" で拒否される(実機で確認済み)。
-           次の一手は、GUIのパスワードダイアログ(runPrivilegedUnmount:)ではなく、
-           同梱のsetuid rootヘルパー(aqualink-umount-helper)を直接叩く方法。
-           GUIダイアログ経由のroot権限は、マウントしたのと別セッション扱いに
-           なるらしく同じ"Operation not permitted"で失敗することが実機で判明した
-           一方、mount_webdav自身と同じ「setuidで直接fork/exec」した権限なら
-           成功することも確認済み(smb3/README.md参照)。ヘルパーの初回準備だけは
-           管理者パスワードが要るので、メインスレッドに同期で確認してもらう。 */
-        NSMutableArray *helperReadyHolder = [NSMutableArray array];
-        [self performSelectorOnMainThread:@selector(ensureUmountHelperSetuidWithPromptInto:)
-                                withObject:helperReadyHolder
-                             waitUntilDone:YES];
-        BOOL helperReady = ([helperReadyHolder count] > 0) && [[helperReadyHolder objectAtIndex:0] boolValue];
-
-        if (helperReady) {
-            unmountOK = AQRunPrivilegedHelperUmount(mp, 10.0);
-        }
-
-        if (!unmountOK) {
-            /* ヘルパーが使えない(準備を断られた等)、またはそれでも外れない場合の
-               最終手段として、従来のGUIパスワードダイアログも一応試す。
-               上記の理由で成功する見込みは薄いが、環境によっては通ることもあり
-               得るため保険として残す。 */
-            [self runPrivilegedUnmount:mp errorMessage:&privilegedError];
-            unmountOK = !AQIsMountPoint(mp);
-        }
+    /* ヘルパーは準備済みなのに失敗した場合だけの最終手段。成功の見込みは薄いが、
+       環境によっては通る。準備をキャンセルした直後に別のパスワード画面を重ねて
+       出さないよう、未準備のときとシャットダウン中は試さない */
+    if (!unmountOK && mp != nil && !gAQSystemQuit && AQUmountHelperHasSetuid()) {
+        [self runPrivilegedUnmount:mp errorMessage:outPrivilegedError];
+        unmountOK = !AQIsMountPoint(mp);
     }
 
-    NSString *resultMessage;
     if (unmountOK) {
-        /* AQTeardownMountPoint以外の経路(ヘルパー直叩き・GUIダイアログ経由)で
-           外れた場合、空ディレクトリの片付けとFinderへの通知(どちらも
-           AQCleanupEmptyMountDir内)がまだ済んでいない。ここで確実に呼ぶ
-           (既に片付いていれば何もしない、呼んでも無害)。 */
         AQCleanupEmptyMountDir(mp);
-        /* 外れたことを確認できた後で初めてサーバーを止める */
         if (webdavServer != nil) {
             [webdavServer stop];
             [webdavServer release];
@@ -2532,14 +2568,24 @@ static BOOL AQMountWebdavHasSetuid(void)
         [mountPointPath release];
         mountPointPath = nil;
         mounted = NO;
+    }
+    return unmountOK;
+}
+
+- (void)doUnmount
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+    NSString *privilegedError = nil;
+    BOOL unmountOK = [self removeActiveMountWithError:&privilegedError];
+
+    NSString *resultMessage;
+    if (unmountOK) {
         resultMessage = L("取り外しました");
     } else if (privilegedError != nil) {
         resultMessage = [NSString stringWithFormat:L("取り外しに失敗しました: %@"), privilegedError];
     } else {
-        /* まだ外れていない。サーバーは絶対に止めない(壊れたマウントにしないため)。
-           一般利用者にターミナルやコマンドを触らせるのは避け、時間を置いての
-           再試行のみを案内する(過去にコピペ案内を出していたが、専門知識の無い
-           利用者には不向きと判断し撤回した)。 */
+        /* 一般利用者にコマンド操作は案内せず、再試行だけを促す */
         resultMessage = L("取り外しに失敗しました。しばらく待ってから、もう一度「取り外す」をお試しください");
     }
 
@@ -2547,6 +2593,188 @@ static BOOL AQMountWebdavHasSetuid(void)
                             withObject:resultMessage
                          waitUntilDone:NO];
 
+    [pool release];
+}
+
+/* 今の終了要求がログアウト・再起動・システム終了によるものか。loginwindowが送る
+   終了イベントには理由の属性('why?')が付く(Cmd-Qでの通常終了には付かない) */
+static BOOL AQIsSystemQuitEvent(void)
+{
+    NSAppleEventDescriptor *ev = [[NSAppleEventManager sharedAppleEventManager] currentAppleEvent];
+    if (ev == nil || [ev eventClass] != kCoreEventClass || [ev eventID] != kAEQuitApplication) {
+        return NO;
+    }
+    return [ev attributeDescriptorForKeyword:0x7768793F /* 'why?' */] != nil;
+}
+
+- (void)systemWillPowerOff:(NSNotification *)note
+{
+    gAQSystemQuit = YES;
+}
+
+/* マウント中に終了すると、外せないままサーバーが止まって壊れたマウントが残る。
+   外せなければ終了を中止し、サーバーもマウントも生かしたままにする。 */
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
+{
+    NSString *title = nil;
+    NSString *detail = nil;
+
+    /* ログアウト・再起動・システム終了では何も聞かずに終了する。外せる分は外し、
+       外せなくても終了は止めない(作業を終えた人のシャットダウンを止めるほうが害が大きい)。
+       残りの後始末はapplicationWillTerminate:が行う */
+    if (gAQSystemQuit || AQIsSystemQuitEvent()) {
+        gAQSystemQuit = YES;
+        if (!mountOperationInProgress) {
+            [self resyncMountedStateFromGroundTruth];
+            if (mounted) {
+                gAQTerminating = YES;
+                [self removeActiveMountWithError:NULL];
+                gAQTerminating = NO;
+            }
+        }
+        return NSTerminateNow;
+    }
+
+    if (mountOperationInProgress) {
+        title = L("マウント処理の途中です");
+        detail = L("処理が終わってから、もう一度終了してください。");
+    } else {
+        [self resyncMountedStateFromGroundTruth];
+        if (!mounted) {
+            return NSTerminateNow;
+        }
+        [statusLabel setStringValue:L("終了前にマウントを取り外しています...")];
+        [statusLabel display];
+        gAQTerminating = YES;
+        NSString *privilegedError = nil;
+        BOOL ok = [self removeActiveMountWithError:&privilegedError];
+        gAQTerminating = NO;
+        if (ok) {
+            return NSTerminateNow;
+        }
+        title = L("AquaLinkを終了しませんでした");
+        detail = L("Finderのマウントを取り外せなかったため、終了を中止しました。マウントは引き続き使えます。もう一度終了をお試しください。");
+        [statusLabel setStringValue:detail];
+    }
+
+    [window makeKeyAndOrderFront:nil];
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:title];
+    [alert setInformativeText:detail];
+    [alert addButtonWithTitle:L("OK")];
+    [alert runModal];
+    [alert release];
+    return NSTerminateCancel;
+}
+
+/* 前回のAquaLinkが残したマウントの一覧(各要素 { path, port })。
+   MNT_NOWAITなのでマウント先のサーバーが死んでいても固まらない。
+   誰かが応答しているポートは、別のAquaLinkが使用中の可能性があるので対象外。
+   getmntinfoの結果は共有バッファなので、cleanupLeftoverMountsの排他内で呼ぶこと。 */
+static NSArray *AQLeftoverMounts(void)
+{
+    static const char prefix[] = "http://127.0.0.1:";
+    NSMutableArray *result = [NSMutableArray array];
+    struct statfs *mnts = NULL;
+    int count = getmntinfo(&mnts, MNT_NOWAIT);
+    int i;
+    for (i = 0; i < count; i++) {
+        if (strcmp(mnts[i].f_fstypename, "webdav") != 0 ||
+            strncmp(mnts[i].f_mntfromname, prefix, sizeof(prefix) - 1) != 0 ||
+            strncmp(mnts[i].f_mntonname, "/Volumes/", 9) != 0) {
+            continue;
+        }
+        int port = atoi(mnts[i].f_mntfromname + sizeof(prefix) - 1);
+        if (port < 8090 || port > 8099) { /* doMountが使う範囲 */
+            continue;
+        }
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
+            continue;
+        }
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons((unsigned short)port);
+        BOOL alive = (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+        close(fd);
+        if (alive) {
+            continue;
+        }
+        NSString *path = [[NSFileManager defaultManager]
+                             stringWithFileSystemRepresentation:mnts[i].f_mntonname
+                                                         length:strlen(mnts[i].f_mntonname)];
+        [result addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+                              path, @"path", [NSNumber numberWithInt:port], @"port", nil]];
+    }
+    return result;
+}
+
+/* 応答先を失ったマウントは、触ると固まる恐れがあるので、同じポートで一時サーバーを
+   応答させてから外す。バックグラウンドスレッドから呼ぶこと。 */
+- (void)cleanupLeftoverMounts
+{
+    @synchronized([AppDelegate class]) {
+        NSMutableSet *triedPorts = [NSMutableSet set];
+        BOOL anyFailed = NO;
+        BOOL anyRemoved = NO;
+
+        for (;;) {
+            NSArray *leftovers = AQLeftoverMounts();
+            NSNumber *port = nil;
+            NSEnumerator *e = [leftovers objectEnumerator];
+            NSDictionary *item;
+            while ((item = [e nextObject])) {
+                if (![triedPorts containsObject:[item objectForKey:@"port"]]) {
+                    port = [item objectForKey:@"port"];
+                    break;
+                }
+            }
+            if (port == nil) {
+                break;
+            }
+            [triedPorts addObject:port];
+
+            WebDAVServer *drain = [[WebDAVServer alloc] initWithAppDelegate:self];
+            [drain setDrainOnly:YES];
+            if (![drain startOnPort:[port intValue]]) {
+                [drain release];
+                anyFailed = YES;
+                continue;
+            }
+            e = [leftovers objectEnumerator];
+            while ((item = [e nextObject])) {
+                if (![[item objectForKey:@"port"] isEqual:port]) {
+                    continue;
+                }
+                NSString *path = [item objectForKey:@"path"];
+                if ([self unmountWithHelperIfNeeded:path]) {
+                    AQCleanupEmptyMountDir(path);
+                    anyRemoved = YES;
+                } else {
+                    anyFailed = YES;
+                }
+            }
+            [drain stop];
+            [drain release];
+        }
+
+        if (anyFailed || anyRemoved) {
+            NSString *message = anyFailed
+                ? L("前回のマウントを取り外せませんでした。次回もう一度試します")
+                : L("前回のマウントを片付けました");
+            [statusLabel performSelectorOnMainThread:@selector(setStringValue:)
+                                           withObject:message
+                                        waitUntilDone:NO];
+        }
+    }
+}
+
+- (void)cleanupLeftoverMountsInBackground
+{
+    NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    [self cleanupLeftoverMounts];
     [pool release];
 }
 
@@ -2827,7 +3055,7 @@ static NSString *AQReplaceAll(NSString *source, NSString *target, NSString *repl
 
     NSAlert *alert = [[NSAlert alloc] init];
     [alert setMessageText:L("初回の準備が必要です")];
-    [alert setInformativeText:L("「取り外す」を、パスワードのダイアログを毎回出さずに確実に行えるようにするため、初回だけ管理者権限で小さな専用プログラムを準備します。次回以降はこの確認は出ません。")];
+    [alert setInformativeText:L("マウントしたフォルダを、「取り外す」やAquaLinkの終了時に確実に取り外せるようにするため、初回だけ管理者権限で小さな専用プログラムを準備します。次回以降はこの確認は出ません。")];
     [alert addButtonWithTitle:L("自動で準備する")];
     [alert addButtonWithTitle:L("キャンセル")];
     int resp = [alert runModal];

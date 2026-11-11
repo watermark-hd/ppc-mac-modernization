@@ -11,12 +11,14 @@
     int listenFd;
     int port;
     BOOL shouldRun;
+    BOOL drainOnly;
 }
 
 - (id)initWithAppDelegate:(AppDelegate *)delegate;
 - (BOOL)startOnPort:(int)p;
 - (void)stop;
 - (int)port;
+- (void)setDrainOnly:(BOOL)flag;
 
 - (void)acceptLoop;
 - (void)handleConnection:(NSNumber *)fdNumber;
@@ -29,6 +31,7 @@
 - (void)sendSimpleStatus:(NSString *)status toSocket:(int)fd;
 - (NSString *)smbPathForWebDAVPath:(NSString *)path;
 - (void)handleOPTIONS:(int)fd;
+- (void)handleDrainPROPFIND:(NSString *)path toSocket:(int)fd;
 - (NSString *)responseEntryForHref:(NSString *)href isDir:(BOOL)isDir
                                size:(unsigned long long)size mtime:(time_t)mtime;
 - (void)handlePROPFIND:(NSString *)path depth:(NSString *)depth toSocket:(int)fd;

@@ -51,6 +51,7 @@ enum smb2_sec_compat {
 
     WebDAVServer *webdavServer;
     BOOL mounted;
+    BOOL mountOperationInProgress;
     NSString *mountPointPath;
 
     NSMutableArray *bookmarks; /* 接続に成功したsmb://URLの履歴。新しい順、最大10件 */
@@ -161,5 +162,7 @@ enum smb2_sec_compat {
 - (BOOL)runUnmountCommand:(NSString *)mountPoint force:(BOOL)force;
 - (BOOL)runPrivilegedUnmount:(NSString *)mountPoint errorMessage:(NSString **)outErrorMessage;
 - (BOOL)restorePrivilegedMountWebdavSetuid:(NSString **)outErrorMessage;
+
+- (void)cleanupLeftoverMounts;
 
 @end
