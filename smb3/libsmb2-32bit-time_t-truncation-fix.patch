@@ -1,0 +1,51 @@
+diff -ru a/include/smb2/libsmb2.h b/include/smb2/libsmb2.h
+--- a/include/smb2/libsmb2.h	2026-11-09 17:38:01
++++ b/include/smb2/libsmb2.h	2026-11-09 17:38:01
+@@ -402,7 +402,7 @@
+ /*
+  * Convert unit timeval to a win timestamp
+  */
+-time_t smb2_timeval_to_win(struct smb2_timeval *tv);
++uint64_t smb2_timeval_to_win(struct smb2_timeval *tv);
+ 
+ /*
+  * set the context error string
+diff -ru a/lib/ntlmssp.c b/lib/ntlmssp.c
+--- a/lib/ntlmssp.c	2026-11-09 17:38:01
++++ b/lib/ntlmssp.c	2026-11-09 17:38:01
+@@ -101,7 +101,7 @@
+ 
+         int spnego_wrap;
+         int is_authenticated;
+-        time_t wintime;
++        uint64_t wintime;
+         uint8_t exported_session_key[SMB2_KEY_SIZE];
+ };
+ 
+@@ -487,7 +487,7 @@
+         unsigned int NTChallengeResponse_len = 0;
+         unsigned char NTProofStr[16];
+         unsigned char LMStr[16];
+-        time_t t;
++        uint64_t t;
+         struct smb2_timeval tv _U_;
+         char *server_name_buf;
+         uint32_t server_name_len;
+diff -ru a/lib/timestamps.c b/lib/timestamps.c
+--- a/lib/timestamps.c	2026-11-09 17:38:01
++++ b/lib/timestamps.c	2026-11-09 17:38:01
+@@ -55,11 +55,11 @@
+ #include <libsmb2.h>
+ #include "libsmb2-private.h"
+ 
+-time_t
++uint64_t
+ smb2_timeval_to_win(struct smb2_timeval *tv)
+ {
+-        return (tv->tv_sec * 10000000) +
+-                116444736000000000 + tv->tv_usec * 10;
++        return ((uint64_t)tv->tv_sec * 10000000) +
++                116444736000000000ULL + (uint64_t)tv->tv_usec * 10;
+ }
+ 
+ void

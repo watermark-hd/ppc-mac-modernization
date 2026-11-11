@@ -1,0 +1,64 @@
+--- a/include/smb2/libsmb2.h	2026-11-03 14:52:21
++++ b/include/smb2/libsmb2.h	2026-11-09 02:07:23
+@@ -119,11 +119,14 @@
+ #include <winsockx.h>
+ #endif
+ 
++#ifndef T_SOCKET_DEFINED
++#define T_SOCKET_DEFINED
+ #if defined(_WINDOWS) || defined(_XBOX)
+ typedef SOCKET t_socket;
+ #else
+ typedef int t_socket;
+ #endif
++#endif
+ 
+ /*
+  * Create an SMB2 context.
+--- a/lib/compat.h	2026-11-03 14:52:21
++++ b/lib/compat.h	2026-11-09 02:07:38
+@@ -36,14 +36,20 @@
+ #include <xtl.h>
+ #include <winsockx.h>
+ #endif
++#ifndef T_SOCKET_DEFINED
++#define T_SOCKET_DEFINED
+ typedef SOCKET t_socket;
++#endif
+ #ifndef INVALID_SOCKET
+ #define INVALID_SOCKET  (t_socket)(~0)
+ #endif
+ #define SMB2_INVALID_SOCKET INVALID_SOCKET
+ #define SMB2_VALID_SOCKET(sock)	((sock) != SMB2_INVALID_SOCKET)
+ #else
++#ifndef T_SOCKET_DEFINED
++#define T_SOCKET_DEFINED
+ typedef int t_socket;
++#endif
+ #define SMB2_VALID_SOCKET(sock)	((sock) >= 0)
+ #define SMB2_INVALID_SOCKET		-1
+ #endif
+--- a/lib/hmac-md5.h	2026-11-03 14:52:21
++++ b/lib/hmac-md5.h	2026-11-09 02:34:07
+@@ -19,7 +19,8 @@
+ #  define WORDS_BIGENDIAN 1
+ #endif
+ 
+-#if !defined(__PS2__) && !defined(PICO_PLATFORM)
++#if !defined(__PS2__) && !defined(PICO_PLATFORM) && !defined(UWORD32_DEFINED)
++#define UWORD32_DEFINED
+ typedef uint32_t UWORD32;
+ #endif
+ 
+--- a/lib/md5.h	2026-11-03 14:52:21
++++ b/lib/md5.h	2026-11-09 02:34:11
+@@ -42,7 +42,8 @@
+ #  define WORDS_BIGENDIAN 1
+ #endif
+ 
+-#if !defined(PS2_IOP_PLATFORM)
++#if !defined(PS2_IOP_PLATFORM) && !defined(UWORD32_DEFINED)
++#define UWORD32_DEFINED
+ typedef uint32_t UWORD32;
+ #endif
+ 
