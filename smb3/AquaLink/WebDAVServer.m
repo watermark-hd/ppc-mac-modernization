@@ -79,6 +79,16 @@ static NSString *URLEncodePathComponent(NSString *s)
     drainOnly = flag;
 }
 
+/* Finderに出るボリューム名はマウントURLの最後の要素で決まるので、AquaLinkは
+   http://127.0.0.1:<port>/<共有名>/ をマウントする。その先頭部分(デコード済み、
+   末尾の"/"無し)を登録しておき、NASのパスに変換する時に取り除く。
+   応答のhrefはリクエストのパスをそのまま使うので、そちらの変更は要らない。 */
+- (void)setPathPrefix:(NSString *)prefix
+{
+    [pathPrefix release];
+    pathPrefix = [prefix copy];
+}
+
 - (BOOL)startOnPort:(int)p
 {
     listenFd = socket(AF_INET, SOCK_STREAM, 0);
@@ -310,6 +320,19 @@ static NSString *URLEncodePathComponent(NSString *s)
     NSString *decoded = [path stringByReplacingPercentEscapesUsingEncoding:NSUTF8StringEncoding];
     if (decoded == nil) {
         decoded = path;
+    }
+    /* 先頭の要素が共有名なら取り除く。Macのクライアントは濁点を分解した形(NFD)で
+       送ってくることがあるので、比較だけは合成済みの形(NFC)にそろえて行う
+       (残りのパスは従来どおり手を加えずにNASへ渡す) */
+    if ([pathPrefix length] > 1 && [decoded hasPrefix:@"/"]) {
+        NSRange slash = [decoded rangeOfString:@"/" options:0
+                                         range:NSMakeRange(1, [decoded length] - 1)];
+        unsigned int firstEnd = (slash.location == NSNotFound) ? [decoded length] : slash.location;
+        NSString *first = [decoded substringToIndex:firstEnd];
+        if ([[first precomposedStringWithCanonicalMapping]
+                isEqualToString:[pathPrefix precomposedStringWithCanonicalMapping]]) {
+            decoded = [decoded substringFromIndex:firstEnd];
+        }
     }
     if ([decoded hasPrefix:@"/"]) {
         decoded = [decoded substringFromIndex:1];
@@ -607,6 +630,7 @@ static NSString *URLEncodePathComponent(NSString *s)
 - (void)dealloc
 {
     [self stop];
+    [pathPrefix release];
     [super dealloc];
 }
 

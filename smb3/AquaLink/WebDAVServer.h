@@ -12,6 +12,7 @@
     int port;
     BOOL shouldRun;
     BOOL drainOnly;
+    NSString *pathPrefix; /* マウントURLの先頭(例 "/ダウンロード")。NASのパスに変換する前に取り除く */
 }
 
 - (id)initWithAppDelegate:(AppDelegate *)delegate;
@@ -19,6 +20,7 @@
 - (void)stop;
 - (int)port;
 - (void)setDrainOnly:(BOOL)flag;
+- (void)setPathPrefix:(NSString *)prefix;
 
 - (void)acceptLoop;
 - (void)handleConnection:(NSNumber *)fdNumber;

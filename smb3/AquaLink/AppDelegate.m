@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <signal.h>
+#include <pthread.h>
 #include <sys/wait.h>
 #include <sys/param.h>
 #include <sys/mount.h>
@@ -1962,26 +1963,49 @@ static NSImage *IconForExtension(NSString *ext)
 static BOOL AQIsMountPoint(NSString *path)
 {
     struct statfs sfs;
-    if (statfs([path fileSystemRepresentation], &sfs) != 0) {
+    if (path == nil || statfs([path fileSystemRepresentation], &sfs) != 0) {
         return NO;
     }
-    return (strcmp(sfs.f_mntonname, [path fileSystemRepresentation]) == 0);
+    /* ★バイト列のまま比べてはいけない。濁点などは、FSRefMakePath・
+       fileSystemRepresentationが返すパスでは分解された形(NFD)、OSが記録した
+       マウント先では合成済みの形(NFC)になることがあり、同じ場所でも一致しない
+       (実機で確認済み)。この誤判定で「外れた」と思い込んでサーバーを止め、
+       生きたマウントを壊してシステム全体が固まる事故が起きたので、合成済みの
+       形にそろえて比べる。 */
+    NSString *on = [[NSFileManager defaultManager]
+                       stringWithFileSystemRepresentation:sfs.f_mntonname
+                                                   length:strlen(sfs.f_mntonname)];
+    return [[on precomposedStringWithCanonicalMapping]
+               isEqualToString:[path precomposedStringWithCanonicalMapping]];
 }
 
-/* /Volumes/<base> が既にマウント済みなら /Volumes/<base>-2, -3 ... と空いている名前を探す。
-   Finder自身も共有名が衝突すると同じことをする。見つからなければnil。 */
-static NSString *AQAvailableMountPoint(NSString *base)
+/* FSMountServerVolumeSyncが返したボリューム番号から、マウント先のパスを得る */
+static NSString *AQPathForVolume(FSVolumeRefNum vol)
 {
-    NSString *p = [@"/Volumes" stringByAppendingPathComponent:base];
-    if (!AQIsMountPoint(p)) {
-        return p;
+    FSRef root;
+    UInt8 buf[PATH_MAX];
+    if (FSGetVolumeInfo(vol, 0, NULL, kFSVolInfoNone, NULL, NULL, &root) != noErr ||
+        FSRefMakePath(&root, buf, sizeof(buf)) != noErr) {
+        return nil;
     }
+    return [NSString stringWithUTF8String:(const char *)buf];
+}
+
+/* http://127.0.0.1:<port>/ からマウントされているボリュームのマウント先(無ければnil)。
+   マウント失敗時に半端なマウントが残っていないかの確認用 */
+static NSString *AQMountPointForLoopbackPort(int port)
+{
+    char from[64];
+    snprintf(from, sizeof(from), "http://127.0.0.1:%d/", port);
+    struct statfs *mnts = NULL;
+    int count = getmntinfo(&mnts, MNT_NOWAIT);
     int i;
-    for (i = 2; i <= 20; i++) {
-        NSString *cand = [@"/Volumes" stringByAppendingPathComponent:
-                             [NSString stringWithFormat:@"%@-%d", base, i]];
-        if (!AQIsMountPoint(cand)) {
-            return cand;
+    for (i = 0; i < count; i++) {
+        if (strcmp(mnts[i].f_fstypename, "webdav") == 0 &&
+            strncmp(mnts[i].f_mntfromname, from, strlen(from)) == 0) {
+            return [[NSFileManager defaultManager]
+                       stringWithFileSystemRepresentation:mnts[i].f_mntonname
+                                                   length:strlen(mnts[i].f_mntonname)];
         }
     }
     return nil;
@@ -2028,6 +2052,34 @@ static void AQKillMountWebdavAt(NSString *mountPoint)
     }
 }
 
+/* 子プロセスの終了を、指定秒でタイムアウトしながら待つ。
+   ★メインスレッドから呼ばれた場合は、待っている間もランループを回す。
+   FSMountServerVolumeSyncで作ったボリュームを外す時、DiskArbitrationは
+   AquaLink自身にも「外してよいか」を問い合わせてくる。メインスレッドを
+   sleepで止めて待つと、その問い合わせに答えられず互いに待ち合いになり、
+   10秒ほど固まった末に通知無しの外し方へ落ちる(Cmd-Q時に実機で確認。
+   diskarbitrationdが「AquaLink not responding」を記録していた)。
+   戻り値: 時間内に終了したらYES(時間切れならSIGKILLしてNO)。 */
+static BOOL AQWaitForTask(NSTask *task, double timeoutSec)
+{
+    BOOL onMain = (pthread_main_np() != 0); /* +[NSThread isMainThread]は10.5以降でTigerに無い */
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSec];
+    while ([task isRunning] && [deadline timeIntervalSinceNow] > 0) {
+        NSDate *tick = [NSDate dateWithTimeIntervalSinceNow:0.1];
+        if (onMain) {
+            [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:tick];
+        } else {
+            [NSThread sleepUntilDate:tick];
+        }
+    }
+    if ([task isRunning]) {
+        kill([task processIdentifier], SIGKILL);
+        [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+        return NO;
+    }
+    return YES;
+}
+
 /* umount(必要なら -f)を、指定秒でタイムアウトしながら実行する。
    固まった WebDAV マウントに対して素の umount がハングすることがあるため、
    waitUntilExit ではなくポーリングし、時間切れなら SIGKILL する。
@@ -2043,14 +2095,7 @@ static BOOL AQRunUmount(NSString *mountPoint, BOOL force, double timeoutSec)
     [task setStandardError:[NSPipe pipe]];
     @try {
         [task launch];
-        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSec];
-        while ([task isRunning] && [deadline timeIntervalSinceNow] > 0) {
-            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
-        }
-        if ([task isRunning]) {
-            kill([task processIdentifier], SIGKILL);
-            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
-        }
+        AQWaitForTask(task, timeoutSec);
     }
     @catch (NSException *ex) { }
     [task release];
@@ -2118,6 +2163,9 @@ static BOOL gAQTerminating = NO; /* 終了処理中はキューに積むと実�
 /* ログアウト・再起動・システム終了による終了中。この間は確認ダイアログを一切出さず、
    Finderも再起動しない(応答待ちでシャットダウンを止めないため) */
 static BOOL gAQSystemQuit = NO;
+/* ヘルパーがFSUnmountVolumeSyncで外した(=Finderへ通知済みで、Finderの再起動が
+   要らない)ことを、直後のAQCleanupEmptyMountDirへ伝える */
+static BOOL gAQFinderAlreadyNotified = NO;
 
 static void AQRefreshFinderVolumeIcons(void)
 {
@@ -2146,6 +2194,10 @@ static void AQCleanupEmptyMountDir(NSString *mountPoint)
     }
     /* アンマウントと同時にフォルダが消えた場合(contents == nil)もFinderの表示は
        古いまま残るので、同じように更新する。中身のある実フォルダなら何もしない */
+    if (gAQFinderAlreadyNotified) {
+        gAQFinderAlreadyNotified = NO;
+        return;
+    }
     if (contents == nil || [contents count] == 0) {
         AQRefreshFinderVolumeIcons();
     }
@@ -2230,6 +2282,7 @@ static BOOL AQRunPrivilegedHelperUmount(NSString *mountPoint, double timeoutSec)
     if (helperPath == nil) {
         return !AQIsMountPoint(mountPoint);
     }
+    gAQFinderAlreadyNotified = NO;
     NSTask *task = [[NSTask alloc] init];
     [task setLaunchPath:helperPath];
     [task setArguments:[NSArray arrayWithObject:mountPoint]];
@@ -2237,18 +2290,41 @@ static BOOL AQRunPrivilegedHelperUmount(NSString *mountPoint, double timeoutSec)
     [task setStandardError:[NSPipe pipe]];
     @try {
         [task launch];
-        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:timeoutSec];
-        while ([task isRunning] && [deadline timeIntervalSinceNow] > 0) {
-            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
-        }
-        if ([task isRunning]) {
-            kill([task processIdentifier], SIGKILL);
-            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.3]];
+        if (AQWaitForTask(task, timeoutSec) && [task terminationStatus] == 0) {
+            /* 0 = FSUnmountVolumeSyncで外れた(Finderへ通知済み)。3 = unmount(2)で
+               外れた(Finderの表示は古いまま)。詳細はaqualink-umount-helper.c */
+            gAQFinderAlreadyNotified = YES;
         }
     }
     @catch (NSException *ex) { }
     [task release];
     return !AQIsMountPoint(mountPoint);
+}
+
+/* マウント成功直後に、ヘルパーを「見張り役」として起動する。AquaLinkが
+   強制終了・クラッシュでマウントを残したまま消えた時、見張り役が同じポートで
+   応答を引き継いでから安全に取り外す(サーバーのいないマウントは、アイコンを
+   クリックしただけでFinderが固まり、電源ボタンでの再起動が必要になった。実機で確認)。
+   普通に取り外した場合、見張り役はマウントが消えたことに気づいて自分で終了する。
+   詳細はaqualink-umount-helper.c。終了を待つ必要はないので起動したら手放す。 */
+static void AQStartMountWatchdog(int port)
+{
+    NSString *helperPath = AQUmountHelperPath();
+    if (helperPath == nil || !AQUmountHelperHasSetuid()) {
+        return;
+    }
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath:helperPath];
+    [task setArguments:[NSArray arrayWithObjects:@"--watch",
+                           [NSString stringWithFormat:@"%d", port], nil]];
+    [task setStandardInput:[NSFileHandle fileHandleWithNullDevice]];
+    [task setStandardOutput:[NSFileHandle fileHandleWithNullDevice]];
+    [task setStandardError:[NSFileHandle fileHandleWithNullDevice]];
+    @try {
+        [task launch];
+    }
+    @catch (NSException *ex) { }
+    [task release];
 }
 
 /* /sbin/mount_webdav にsetuidビットが付いているか。付いていないと一般ユーザーでは
@@ -2278,12 +2354,19 @@ static BOOL AQMountWebdavHasSetuid(void)
     if (AQIsMountPoint(mountPointPath)) {
         return; /* 実際にまだマウントされている。合っているので何もしない */
     }
+    if (webdavServer != nil && AQMountPointForLoopbackPort([webdavServer port]) != nil) {
+        return; /* パスの判定とは別に、このサーバーからのマウントがまだ残っている。止めない */
+    }
     if (webdavServer != nil) {
         [webdavServer stop];
         [webdavServer release];
         webdavServer = nil;
     }
+    /* アプリの外で外れたケース。今はFinderの取り出し(三角ボタン)で外すのが普通で、
+       その場合Finderの表示は既に正しいので、Finderの再起動は求めない */
+    gAQFinderAlreadyNotified = YES;
     AQCleanupEmptyMountDir(mountPointPath);
+    gAQFinderAlreadyNotified = NO;
     [mountPointPath release];
     mountPointPath = nil;
     mounted = NO;
@@ -2376,80 +2459,47 @@ static BOOL AQMountWebdavHasSetuid(void)
     }
 
     NSString *mountName = ([currentShare length] > 0) ? currentShare : @"NAS";
-    /* 同名のマウントが既に残っていると、その場所へ再度mount_webdavしようとして
-       ハングする(前セッションのマウントが外れずに残っていた実例あり)。
-       Finder同様、空いている `/Volumes/<名前>-2` 等を探して使う。 */
-    NSString *mountPoint = AQAvailableMountPoint(mountName);
-    if (mountPoint == nil) {
-        [webdavServer stop];
-        [webdavServer release];
-        webdavServer = nil;
-        [self performSelectorOnMainThread:@selector(mountFailed:)
-            withObject:L("マウント先の空きが見つかりません。/Volumes に古いマウントが残っている可能性があります。ターミナルで sudo umount -f /Volumes/共有名 を試してください。")
-            waitUntilDone:NO];
-        [pool release];
-        return;
-    }
-    [[NSFileManager defaultManager] createDirectoryAtPath:mountPoint attributes:nil];
-
-    NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d/", [webdavServer port]];
-
-    NSTask *task = [[NSTask alloc] init];
-    [task setLaunchPath:@"/sbin/mount_webdav"];
-    [task setArguments:[NSArray arrayWithObjects:urlString, mountPoint, nil]];
-    [task setStandardOutput:[NSPipe pipe]];
-    NSPipe *errPipe = [NSPipe pipe];
-    [task setStandardError:errPipe];
+    /* mount_webdavを直接実行するのではなく、Finderの「サーバへ接続」と同じ
+       FSMountServerVolumeSyncでマウントする。こうするとOSのディスク管理の仕組み
+       (DiskArbitration)に登録され、Finderの取り出し(三角ボタン)が使えるうえ、
+       AquaLinkが外した時もFinderの再起動なしで表示が消える(実機で確認済み)。
+       ボリューム名はURLの最後の要素で決まるので、共有名をURLに入れる。
+       マウント先(/Volumes/<名前>)と名前の重複回避はOSが決める。 */
+    [webdavServer setPathPrefix:[@"/" stringByAppendingString:mountName]];
+    NSString *escapedName = [(NSString *)CFURLCreateStringByAddingPercentEscapes(
+        NULL, (CFStringRef)mountName, NULL, CFSTR("/?#;:@&=+$,%"), kCFStringEncodingUTF8) autorelease];
+    NSString *urlString = [NSString stringWithFormat:@"http://127.0.0.1:%d/%@/",
+                              [webdavServer port], escapedName];
 
     NSString *resultMessage = nil;
+    NSString *mountPoint = nil;
     BOOL success = NO;
-    BOOL timedOut = NO;
-    @try {
-        [task launch];
-        /* mount_webdav が万一固まっても永久に待たないよう、25秒で打ち切る。
-           waitUntilExit の代わりにポーリングする。 */
-        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:25.0];
-        while ([task isRunning] && [deadline timeIntervalSinceNow] > 0) {
-            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.2]];
-        }
-        if ([task isRunning]) {
-            /* terminate(SIGTERM)ではmount_webdavが死なないことがあるので直接SIGKILL。
-               実UIDが同じなので届く。 */
-            kill([task processIdentifier], SIGKILL);
-            [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
-            timedOut = YES;
-            resultMessage = L("マウント失敗: 応答がありません(タイムアウト)");
-            success = NO;
-        } else {
-            success = ([task terminationStatus] == 0);
-        }
+    CFURLRef url = CFURLCreateWithString(NULL, (CFStringRef)urlString, NULL);
+    FSVolumeRefNum vol = 0;
+    OSStatus err = (url != NULL) ? FSMountServerVolumeSync(url, NULL, NULL, NULL, &vol, 0) : paramErr;
+    if (url != NULL) {
+        CFRelease(url);
     }
-    @catch (NSException *ex) {
-        resultMessage = [NSString stringWithFormat:L("マウント失敗: %@"), [ex reason]];
-        success = NO;
-    }
-
-    /* 「成功」と言っていても本当にマウントできているか最終確認する。
-       mount_webdav が終了コード0で戻りつつ実際にはマウントできていない、
-       という半端な状態を弾く。 */
-    if (success && !AQIsMountPoint(mountPoint)) {
-        success = NO;
-        if (resultMessage == nil) {
+    if (err == noErr) {
+        mountPoint = [AQPathForVolume(vol) precomposedStringWithCanonicalMapping];
+        /* 本当にマウントできているか最終確認する */
+        success = (mountPoint != nil && AQIsMountPoint(mountPoint));
+        if (!success) {
             resultMessage = L("マウント失敗: マウントが完了しませんでした");
         }
+    } else {
+        resultMessage = [NSString stringWithFormat:L("マウント失敗: エラー %d"), (int)err];
+    }
+    if (mountPoint == nil) {
+        /* 失敗しても半端なマウントが残っていれば、後始末のために場所を拾っておく */
+        mountPoint = AQMountPointForLoopbackPort([webdavServer port]);
     }
 
     if (success) {
         mountPointPath = [mountPoint retain];
         mounted = YES;
         resultMessage = [NSString stringWithFormat:L("%@ にマウントしました"), mountPoint];
-    } else if (resultMessage == nil) {
-        NSData *errData = [[errPipe fileHandleForReading] readDataToEndOfFile];
-        NSString *errStr = [[[NSString alloc] initWithData:errData encoding:NSUTF8StringEncoding] autorelease];
-        resultMessage = [NSString stringWithFormat:L("マウント失敗: %@"), (errStr ? errStr : @"")];
     }
-    (void)timedOut;
-    [task release];
 
     if (!success) {
         /* 失敗した時は、サーバーを止める *前に* 必ずマウント試行の後始末をする。
@@ -2459,10 +2509,25 @@ static BOOL AQMountWebdavHasSetuid(void)
            mount_webdavをkillしても実害は無い(成功済みマウントには絶対に使わない
            AQAbandonFailedMountAttemptを使う。AQTeardownMountPointとの違いは
            コメント参照)。 */
-        AQAbandonFailedMountAttempt(mountPoint);
+        if (mountPoint != nil) {
+            AQAbandonFailedMountAttempt(mountPoint);
+        }
+    }
+    if (!success && AQMountPointForLoopbackPort([webdavServer port]) != nil) {
+        /* 失敗扱いでも、このサーバーからのマウントがまだ残っているなら、
+           サーバーを止めると壊れたマウントになる。マウント済みとして扱い、
+           通常の「取り外す」で外せるようにする */
+        mountPointPath = [AQMountPointForLoopbackPort([webdavServer port]) retain];
+        mounted = YES;
+        success = YES;
+        resultMessage = [NSString stringWithFormat:L("%@ にマウントしました"), mountPointPath];
+    }
+    if (!success) {
         [webdavServer stop];
         [webdavServer release];
         webdavServer = nil;
+    } else {
+        AQStartMountWatchdog([webdavServer port]);
     }
 
     [self performSelectorOnMainThread:(success ? @selector(mountSucceededWithMessage:)
@@ -2556,6 +2621,13 @@ static BOOL AQMountWebdavHasSetuid(void)
     if (!unmountOK && mp != nil && !gAQSystemQuit && AQUmountHelperHasSetuid()) {
         [self runPrivilegedUnmount:mp errorMessage:outPrivilegedError];
         unmountOK = !AQIsMountPoint(mp);
+    }
+
+    /* 安全策: パスの判定とは別に、OSのマウント一覧にこのサーバーからの
+       マウントが残っていないことを確かめてからサーバーを止める */
+    if (unmountOK && webdavServer != nil &&
+        AQMountPointForLoopbackPort([webdavServer port]) != nil) {
+        unmountOK = NO;
     }
 
     if (unmountOK) {

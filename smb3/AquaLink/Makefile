@@ -56,7 +56,7 @@ ifneq ($(SDKROOT),)
 CFLAGS += -isysroot $(SDKROOT)
 LDFLAGS += -isysroot $(SDKROOT)
 endif
-LDFLAGS += -framework Cocoa -framework Security -framework SystemConfiguration
+LDFLAGS += -framework Cocoa -framework CoreServices -framework Security -framework SystemConfiguration
 
 OBJS = main.o AppDelegate.o WebDAVServer.o LocalWebDAVServer.o
 
@@ -78,7 +78,7 @@ $(APPBUNDLE): $(MACOS)/$(APPNAME) Info.plist $(APPNAME).icns $(RESOURCES)/$(HELP
 
 $(RESOURCES)/$(HELPER): $(HELPER).c
 	mkdir -p $(RESOURCES)
-	$(CC) -std=gnu99 -Wall -o $@ $(HELPER).c
+	$(CC) -std=gnu99 -Wall -o $@ $(HELPER).c -framework CoreServices
 
 $(MACOS)/$(APPNAME): $(OBJS) $(LIBSMB2_A) $(OPENSSL_SSL_A) $(OPENSSL_CRYPTO_A)
 	mkdir -p $(MACOS)
